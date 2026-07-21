@@ -1,0 +1,60 @@
+HDR TAG DESIGNER v0.3.1 - VALIDATION SUMMARY
+Generated: 2026-07-20
+
+SCOPE
+- Local Streamlit prototype for Bollen-style ITPN with SpCas9 D10A.
+- Species is the first input: mouse GRCm39 or human GRCh38.
+- Fixed donor in this version: Addgene #169227, C-terminal GGGGSAS-mNeonGreen-stop.
+- Reference sequence only; no genome-wide off-target analysis.
+- Custom donor backbones/tags are intentionally deferred.
+- N-terminal mode currently produces a locus/arm/guide preview; full cloning is C-terminal only for the supplied backbone.
+
+TUBB5 COMPUTATIONAL TEST
+- Gene/transcript: mouse Tubb5-201, ENSMUST00000001566.10.
+- Terminus: C-terminal.
+- Endogenous stop removed from DHA: TAA.
+- Insertion boundary0: 36145876.
+- Selected spacer: GAGGCAGAAGAGGAGGCCTA
+- PAM: AGG
+- Target + PAM: GAGGCAGAAGAGGAGGCCTAAGG
+- PAM-containing chromosome strand: -
+- Target interval (1-based): 36145872-36145894
+- Nominal nick boundary0: 36145877
+- Nick-to-insertion distance: 1 bp.
+- Intended edit destroys PAM: True.
+- Extra guide-blocking mutation required: False.
+- UHA: 17:36145877-36146476, 600 bp.
+- DHA: 17:36145274-36145873, 600 bp.
+- Silent arm changes: 1.
+- SapI domestication: UHA base 396, gene-oriented GAG->GAA, Glu unchanged.
+- UHA synthesis fragment: 651 nt; digest overhangs TAC/GGC.
+- DHA synthesis fragment: 651 nt; digest overhangs TGA/AAT.
+- Donor insert: 1975 bp.
+- Final circular plasmid: 3950 bp.
+- SapI sites remaining in final plasmid: 0.
+- Native Tubb5: 444 aa.
+- mNeonGreen: 235 aa.
+- Predicted GGGGSAS-mNeonGreen fusion: 686 aa; no internal stop.
+
+UPLOADED BACKBONE CHECK
+- Parsed file: addgene_169227.dna.
+- SHA-256: b5ccaa5a257b71a1f2bac05ab15785f07098a46ed805c2862b5beeade04046b1.
+- Input length/topology: 2768 bp / circular.
+- SapI sites: 4.
+- Observed overhang order: TAC, GGC, TGA, AAT.
+- Reconstructed 729-bp linker-mNeonGreen-stop payload matches the bundled Bollen S2 sequence: True.
+
+AUTOMATED VALIDATION
+- Unit/integration tests: 15 passed.
+- Streamlit AppTest: passed.
+- Streamlit local server health endpoint: ok; root returned HTTP 200.
+- Generic mouse and human C-terminal code paths: passed with deterministic synthetic Ensembl client.
+- N-terminal preview path: passed with deterministic synthetic Ensembl client.
+- Tubb5 guide, coordinates, PAM loss, arms, SapI domestication, S1/S3 adapters, fragment digests, full plasmid assembly, translation, and GenBank round-trip: passed.
+- Validation gates: Reference coding frame=PASS, SpCas9-NGG candidates=PASS, Guide proximity=PASS, Target disrupted by edit=PASS, Donor retargeting safeguard=PASS, Internal SapI sites after corrections=PASS, Endogenous C-terminal stop omitted from DHA=PASS, Bollen SapI fragment architecture=PASS, Uploaded Addgene #169227 backbone=PASS, Full circular plasmid assembly=PASS, Fusion translation=PASS.
+
+ENVIRONMENT NOTE
+- A live Ensembl request could not be executed inside the build sandbox because outbound DNS was unavailable. The Ensembl REST client and generic design paths are covered by deterministic tests; live use requires internet access.
+
+IMPORTANT
+This is a computational design aid. Independently verify transcript choice, reference sequence, sample genotype, guide activity, all synthesis sequences, and both knock-in junctions before experimental use. C-terminal tagging may alter Tubb5 tail biology; this result was requested as a computational test.

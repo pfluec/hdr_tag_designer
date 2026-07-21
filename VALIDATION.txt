@@ -1,0 +1,56 @@
+HDR TAG DESIGNER v0.3.0 - VALIDATION RECORD
+=======================================================
+
+Validation date: 2026-07-20
+Scope: fixed Addgene #169227 C-terminal mNeonGreen prototype; custom backbones/tags deferred.
+
+AUTOMATED TESTS
+-------------------------------------------------------
+PASS: 15/15 Python unit/integration tests.
+PASS: Streamlit default Tubb5 workflow via streamlit.testing.v1.AppTest.
+PASS: mocked live-design code paths for mouse GRCm39 and human GRCh38.
+PASS: N-terminal code path is explicitly limited to a locus-design preview with this C-terminal backbone.
+PASS: headless Streamlit health endpoint returned ok.
+PASS: Python bytecode compilation for app, package, scripts, and tests.
+
+UPLOADED BACKBONE
+-------------------------------------------------------
+File: addgene_169227.dna
+SHA-256: b5ccaa5a257b71a1f2bac05ab15785f07098a46ed805c2862b5beeade04046b1
+Length/topology: 2768 bp / circular
+Annotated features parsed: 8
+SapI sites: 4
+SapI overhang order: TAC -> GGC -> TGA -> AAT
+Payload reconstructed from .dna: 729 bp
+Payload equals Bollen supplementary S2 sequence: True
+
+TUBB5 COMPUTATIONAL TEST
+-------------------------------------------------------
+Reference: mouse GRCm39/mm39; Tubb5-201; ENSMUST00000001566.10; reverse strand.
+Selected guide: 5'-GAGGCAGAAGAGGAGGCCTA-AGG-3'
+Nominal SpCas9 D10A nick distance: 1 bp from insertion boundary.
+The endogenous stop-codon replacement removes part of the AGG PAM; no extra guide-blocking mutation is required.
+Homology arms: 600 bp UHA + 600 bp DHA.
+UHA correction: one synonymous GAG -> GAA change removing an internal SapI site.
+Fixed linker-mNeonGreen-stop payload: 729 bp.
+Assembled donor insert: 1975 bp.
+Simulated circular plasmid: 3950 bp.
+Residual SapI sites in simulated plasmid: 0.
+Predicted fusion protein: 686 aa.
+GenBank round trip: PASS (3950 bp, 19 annotated features, topology circular).
+
+GENERATED OUTPUTS
+-------------------------------------------------------
+outputs/tubb5_test/Tubb5_C_terminal_design_report.txt | 28864 bytes | SHA-256 68ac68a315ab9fb6b586d67d7e1a951aa17da74bb1bdfa0ad77bee39018e2a55
+outputs/tubb5_test/Tubb5_guides.csv | 6179 bytes | SHA-256 1db29e8b5d516c6f4532913d602cd263114d26b9a6c4c498b54c7ed2453e8de8
+outputs/tubb5_test/Tubb5_homology_arms.fasta | 13915 bytes | SHA-256 6bb81f8ebe0bfb688a76d8561568205548412fc1c511f4549235fead5b5b910f
+outputs/tubb5_test/Tubb5_design.json | 49362 bytes | SHA-256 df9eb0239aba15b5270c3c3fa2a2c739456ca8ddff8f63fc1d0db391f0604d30
+outputs/tubb5_test/Tubb5_C_terminal_mNeonGreen_assembled_plasmid.gb | 9531 bytes | SHA-256 6a3790236f571b8ae847eec250a59389b25e4eadc50f4f0d887d9cc101d0829e
+
+KNOWN LIMITATIONS
+-------------------------------------------------------
+No off-target search or validated activity score is performed.
+Reference sequence only; no strain/cell-line variants are considered.
+Live Ensembl network calls were not executed inside the isolated build container; the same code paths were tested with deterministic Ensembl stand-ins for both species.
+Only the bundled Tubb5 test automatically applies a validated synonymous SapI correction. Other loci with internal SapI sites or an intact retargetable guide are flagged for manual review.
+The result is a computational design and requires independent sequence, transcript, plasmid, and biological validation before experimental use.

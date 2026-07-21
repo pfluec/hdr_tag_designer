@@ -1,0 +1,14 @@
+name: hdr-tag-designer
+
+channels:
+  - conda-forge
+  - defaults
+
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      - streamlit>=1.32,<2
+      - pandas>=2.0,<3
+      - requests>=2.31,<3
+      - biopython>=1.83,<2

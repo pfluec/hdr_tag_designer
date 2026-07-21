@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hdr-tag-designer"
+version = "0.3.1"
+description = "Local Streamlit prototype for Bollen-style ITPN HDR gene tagging designs"
+requires-python = ">=3.10"
+dependencies = [
+  "requests>=2.31,<3",
+  "pandas>=2.0,<3",
+  "streamlit>=1.59,<2",
+  "biopython>=1.83,<2",
+]
+
+[tool.setuptools.packages.find]
+include = ["hdr_designer*"]
