@@ -25,9 +25,12 @@ Requirements:
 - include sequence, length, checksum, and relevant design/QC status columns in addition to the vendor-required fields;
 - verify the current Twist upload schema from an official template or documentation before fixing column names;
 - keep vendor-specific column mapping isolated in the export layer and add a deterministic CSV regression fixture;
-- synthesis preflight is recorded as `HDR Tag Designer Twist preflight v1 (2026-07-21)`;
+- synthesis preflight is recorded as `HDR Tag Designer Twist preflight v2 (2026-07-21)`;
 - per the user-supplied ordering requirement, each **final homology arm** may contain at most 14 identical consecutive nucleotides;
-- runs of 15 or more produce an error with arm name, 1-based arm interval, base, and run length and prevent ZIP release;
+- runs of 15 or more automatically move the distal arm boundary into the run: UHA retains the insertion-proximal suffix, DHA retains the insertion-proximal prefix, and the remaining partial run is placed at the guide/SapI-facing arm edge;
+- for multiple long runs, UHA uses the rightmost and DHA the leftmost run so that no other over-limit run remains in retained homology;
+- requested/final lengths, trimmed-base count, original run interval/length, and retained run length are recorded in the result and Twist CSV;
+- if the adjustment would leave less than 100 bp of homology, the design is blocked rather than silently releasing an impractically short arm;
 - exactly 14 is accepted;
 - the CSV still says `Twist Portal Screening = REQUIRED`, because this one local rule does not replace the vendor's full proprietary sequence-complexity screen.
 
@@ -93,7 +96,7 @@ Development is continuing on the Git branch:
 feat/ordering-export-bundle
 ```
 
-This branch was created from `main` at documentation commit `3eb6776` (immediately after feature merge `9398337`) before the ordering/export implementation. At the time of this handoff update, the 0.7.0 changes are implemented and tested locally but have not been committed or merged.
+This branch was created from `main` at documentation commit `3eb6776` (immediately after feature merge `9398337`). The initial ordering/export implementation was committed on this branch as `2a364c2`; the subsequent homopolymer-aware arm-boundary refinement is included in the current feature-branch work. The branch has not been merged or pushed.
 
 Version `0.7.0` retains the automatic-mutation, custom-backbone, complex-payload, guide-context, and genotyping work from `0.6.0` and adds:
 
@@ -104,7 +107,7 @@ Version `0.7.0` retains the automatic-mutation, custom-backbone, complex-payload
 5. deterministic six-member ordering ZIP with all three CSVs and all three GenBank records;
 6. one no-rerun ZIP download in place of the eight old user-facing downloads;
 7. hidden non-selected guides until full dependent recalculation is implemented;
-8. a hard ordering error for homopolymer runs of 15 or more in either final homology arm.
+8. automatic distal arm-boundary placement within homopolymers of 15 or more, with a residual hard gate if a safe adjustment is impossible.
 
 The previous release's behavior remains intact:
 
@@ -119,10 +122,10 @@ The previous release's behavior remains intact:
 Current validation state:
 
 ```text
-43/43 unittest tests pass
+47/47 unittest tests pass
 Bundled Tubb5 fixture remains sequence-complete
-Tubb5 ordering ZIP is correctly blocked by a natural T x 26 run in final DHA bases 256-281
-Exact #169227 Tubb5 sequence/coordinate/plasmid regressions pass unchanged
+Tubb5 DHA is shortened from the requested 600 bp to 268 bp at the midpoint of its natural T x 26 run; 13 T bases remain at the guide/SapI-facing edge
+Tubb5 ordering ZIP now passes, with a 1,643-bp donor insert and 3,618-bp assembled plasmid
 Synthetic N-terminal designs pass on plus and minus gene strands
 Addgene #169226 yields a 3947-bp SapI-free assembled plasmid with 600-bp arms
 Custom-upload classification and complete assembly path pass using #169226 as a fixture
@@ -554,10 +557,12 @@ Predicted fusion: 686 aa
 ### Simulated assembled plasmid
 
 ```text
-Donor insert: 1,975 bp
-Final circular plasmid: 3,950 bp
+Donor insert: 1,643 bp
+Final circular plasmid: 3,618 bp
 Residual SapI sites: 0
 ```
+
+The former 1,975/3,950-bp values describe the pre-adjustment 600/600-bp construct and are retained only in older historical notes.
 
 This result is a computational test only. C-terminal tagging may interfere with the functional tubulin tail.
 
@@ -793,7 +798,7 @@ The fixed implementation in `hdr_designer/backbones.py` already provides a valid
 - full circular assembly and feature-coordinate reconstruction;
 - final SapI and junction validation.
 
-Do not replace this in one step. Convert it into the first `BackboneDefinition` configuration while preserving the exact sequences, coordinates, 3,950-bp final plasmid, and GenBank annotations asserted by `tests/test_tubb5.py`.
+Historical note: the original migration preserved a 3,950-bp 600/600-arm Tubb5 plasmid. That exact-length invariant was superseded in 0.7.0 by the required poly-T boundary adjustment; current tests assert the 3,618-bp 600/268-arm plasmid instead.
 
 Recommended phases:
 
@@ -1187,14 +1192,14 @@ Completed in the current repository:
 - [x] integrate the selected-guide oligo function and its two-row CSV;
 - [x] give the four unique genotyping primers stable gene-specific names and enforce external-primer reuse;
 - [x] add final UHA/DHA Twist CSV with checksum and preflight metadata;
-- [x] enforce the final-arm homopolymer maximum and block ZIP release for 15+ nt;
+- [x] enforce the final-arm homopolymer maximum by moving the distal boundary into 15+ nt runs, with a residual block if at least 100 bp cannot be retained;
 - [x] build and test the deterministic six-member ordering ZIP;
 - [x] replace the old download buttons with the single ZIP and hide non-selected guides.
 
 Recommended next work:
 
 1. obtain an official fixed-column Twist template only if the laboratory's account workflow requires one; the current uploader supports flexible name/sequence mapping;
-2. consider a user-assisted redesign path for homopolymer-blocked arms such as Tubb5, without silently changing genomic sequence;
+2. consider a user-controlled arm-boundary override if laboratories want to choose a different retained half of a synthesis-problematic repeat;
 3. cache a license-compatible Actb reference fixture if a fully offline exact archive regression is desired;
 4. later implement safe alternative-guide selection only together with full downstream recalculation.
 
@@ -1260,7 +1265,7 @@ The 0.7.0 delivery objective is complete:
 3. **retain the detailed genotyping-primer CSV;**
 4. **deliver those ordering CSVs and the assembled-plasmid, WT-locus, and edited-locus GenBank records in one ZIP;**
 5. **remove the other download buttons from the normal interface;**
-6. **block order-ready export when either final arm contains a homopolymer longer than 14 nt.**
+6. **automatically terminate the distal arm boundary within a >14-nt homopolymer and block only if a safe minimum-length arm cannot be retained.**
 
 Payload-only FASTA input, GenBank backbone input, origin normalization, and richer payload metadata remain possible later extensions but are no longer the immediate next chunk.
 

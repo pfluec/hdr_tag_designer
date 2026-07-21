@@ -43,6 +43,11 @@ from .models import (
 )
 from .primers import design_genotyping_primers, design_homology_arm_cloning_primers
 from .sequence import CODON_TABLE, find_motif_positions, gc_percent, reverse_complement, translate
+from .synthesis_qc import (
+    MIN_RETAINED_HOMOLOGY_ARM_NT,
+    TWIST_MAX_HOMOPOLYMER_NT,
+    homopolymer_findings,
+)
 
 
 class DesignError(RuntimeError):
@@ -149,6 +154,123 @@ def _make_arm(
         gc_percent=gc_percent(gene_oriented),
         sapi_sites=sites,
         final_sapi_sites=sites,
+        requested_length=len(gene_oriented),
+    )
+
+
+def adjust_homology_arm_boundary_for_synthesis(
+    arm: HomologyArm,
+    *,
+    arm_role: str,
+    gene_strand: int,
+) -> tuple[HomologyArm, str | None]:
+    """Move the distal arm boundary into a long homopolymer when required."""
+    if arm_role not in {"five_prime", "three_prime"}:
+        raise ValueError("arm_role must be five_prime or three_prime")
+    if gene_strand not in {-1, 1}:
+        raise ValueError("gene_strand must be -1 or 1")
+    if arm.mutations or arm.corrected_gene_oriented_sequence:
+        raise DesignError("Homopolymer arm-boundary adjustment must run before donor mutations")
+
+    sequence = arm.gene_oriented_sequence
+    findings = homopolymer_findings(sequence)
+    if not findings:
+        return arm, None
+
+    # Preserve the insertion-proximal sequence. UHA may lose only its
+    # gene-oriented 5-prime prefix; DHA may lose only its 3-prime suffix.
+    # The run nearest the payload-facing invariant sequence is selected so no
+    # other over-limit run remains within the retained arm.
+    finding = findings[-1] if arm_role == "five_prime" else findings[0]
+    retained_run_length = min(
+        TWIST_MAX_HOMOPOLYMER_NT,
+        (int(finding["length_nt"]) + 1) // 2,
+    )
+    if arm_role == "five_prime":
+        retained_start0 = int(finding["end0"]) - retained_run_length
+        retained_end0 = len(sequence)
+        trim_count = retained_start0
+        boundary_side = "gene-oriented 5-prime distal boundary"
+    else:
+        retained_start0 = 0
+        retained_end0 = int(finding["start0"]) + retained_run_length
+        trim_count = len(sequence) - retained_end0
+        boundary_side = "gene-oriented 3-prime distal boundary"
+
+    retained_reference = sequence[retained_start0:retained_end0]
+    if len(retained_reference) < MIN_RETAINED_HOMOLOGY_ARM_NT:
+        raise DesignError(
+            f"{arm.name} contains {finding['base']} x {finding['length_nt']} at bases "
+            f"{finding['interval_1based']}, but moving the distal boundary into that run "
+            f"would leave only {len(retained_reference)} bp. At least "
+            f"{MIN_RETAINED_HOMOLOGY_ARM_NT} bp is required."
+        )
+    if homopolymer_findings(retained_reference):
+        raise DesignError(
+            f"Automatic distal-boundary adjustment did not resolve every long homopolymer in {arm.name}"
+        )
+
+    genomic_start0 = arm.genomic_start0
+    genomic_end0 = arm.genomic_end0
+    if arm_role == "five_prime":
+        if gene_strand == 1:
+            genomic_start0 += trim_count
+        else:
+            genomic_end0 -= trim_count
+    elif gene_strand == 1:
+        genomic_end0 -= trim_count
+    else:
+        genomic_start0 += trim_count
+
+    retained_chromosome_forward = (
+        retained_reference
+        if gene_strand == 1
+        else reverse_complement(retained_reference)
+    )
+    original_length = arm.requested_length or arm.length
+    adjustment = {
+        "status": "ADJUSTED",
+        "reason": "Twist homopolymer ordering limit",
+        "rule_max_nt": TWIST_MAX_HOMOPOLYMER_NT,
+        "original_length_nt": original_length,
+        "final_length_nt": len(retained_reference),
+        "trimmed_bases_nt": trim_count,
+        "original_genomic_interval_1based": arm.genomic_interval_1based,
+        "final_genomic_interval_1based": (
+            f"{arm.chromosome}:{genomic_start0 + 1}-{genomic_end0}"
+        ),
+        "boundary_side": boundary_side,
+        "homopolymer_base": str(finding["base"]),
+        "original_run_interval_1based": str(finding["interval_1based"]),
+        "original_run_length_nt": int(finding["length_nt"]),
+        "retained_boundary_run_length_nt": retained_run_length,
+    }
+    note = (
+        f"Automatic synthesis boundary adjustment: {arm.name} shortened from "
+        f"{original_length} to {len(retained_reference)} bp by placing its {boundary_side} "
+        f"within the {finding['base']} x {finding['length_nt']} run originally at arm "
+        f"bases {finding['interval_1based']}; {retained_run_length} nt of the run remain "
+        "at the guide/SapI-facing arm edge."
+    )
+    sites = _arm_site_records(retained_reference)
+    return (
+        replace(
+            arm,
+            length=len(retained_reference),
+            genomic_start0=genomic_start0,
+            genomic_end0=genomic_end0,
+            gene_oriented_sequence=retained_reference,
+            chromosome_forward_sequence=retained_chromosome_forward,
+            gc_percent=gc_percent(retained_reference),
+            sapi_sites=sites,
+            final_sapi_sites=sites,
+            correction_note=" ".join(
+                part for part in (arm.correction_note, note) if part
+            ),
+            requested_length=original_length,
+            boundary_adjustment=adjustment,
+        ),
+        note,
     )
 
 
@@ -1240,6 +1362,12 @@ def _finalize_result(
         )
     top = guides[0] if guides else None
     final_sapi_count = len(five_prime_arm.final_sapi_sites) + len(three_prime_arm.final_sapi_sites)
+    final_homopolymer_findings = [
+        (arm.name, finding)
+        for arm in (five_prime_arm, three_prime_arm)
+        for finding in homopolymer_findings(arm.final_gene_oriented_sequence)
+    ]
+    homopolymer_safe = not final_homopolymer_findings
 
     donor_payload: dict[str, object] = payload_metadata_for(definition)
     cloning_fragments: dict[str, object] = {}
@@ -1262,7 +1390,9 @@ def _finalize_result(
             payload_gene_oriented=str(donor_payload["payload_sequence_5to3"]),
             arms=(five_prime_arm, three_prime_arm),
         )
-    can_release = bool(top and guide_safe and final_sapi_count == 0)
+    can_release = bool(
+        top and guide_safe and final_sapi_count == 0 and homopolymer_safe
+    )
     if can_release and top:
         cloning_fragments = synthesis_fragments_for_backbone(
             definition,
@@ -1429,6 +1559,28 @@ def _finalize_result(
                     "No GCTCTTC/GAAGAGC motifs remain in either final arm."
                     if final_sapi_count == 0
                     else f"{final_sapi_count} SapI recognition site(s) remain in the final arms."
+                ),
+            },
+            {
+                "check": "Homology-arm synthesis homopolymers",
+                "status": "PASS" if homopolymer_safe else "BLOCKED",
+                "detail": (
+                    (
+                        "Final arms contain no homopolymer longer than 14 nt. "
+                        + "; ".join(
+                            f"{arm.name} was shortened from "
+                            f"{arm.boundary_adjustment['original_length_nt']} to {arm.length} bp "
+                            "at its distal guide/SapI-facing boundary"
+                            for arm in (five_prime_arm, three_prime_arm)
+                            if arm.boundary_adjustment
+                        )
+                    ).rstrip("; ")
+                    if homopolymer_safe
+                    else "; ".join(
+                        f"{arm_name} bases {finding['interval_1based']}: "
+                        f"{finding['base']} x {finding['length_nt']}"
+                        for arm_name, finding in final_homopolymer_findings
+                    )
                 ),
             },
             {
@@ -1713,23 +1865,39 @@ def design_online(
         gene_strand=record.strand,
     )
 
+    mutation_warnings: list[str] = []
+    five_arm, adjustment_note = adjust_homology_arm_boundary_for_synthesis(
+        five_arm,
+        arm_role="five_prime",
+        gene_strand=record.strand,
+    )
+    if adjustment_note:
+        mutation_warnings.append(adjustment_note)
+    three_arm, adjustment_note = adjust_homology_arm_boundary_for_synthesis(
+        three_arm,
+        arm_role="three_prime",
+        gene_strand=record.strand,
+    )
+    if adjustment_note:
+        mutation_warnings.append(adjustment_note)
+
     if record.strand == 1:
         external_five_interval0 = (
-            max(0, five_start0 - GENOTYPING_EXTERNAL_FLANK_NT),
-            five_start0,
+            max(0, five_arm.genomic_start0 - GENOTYPING_EXTERNAL_FLANK_NT),
+            five_arm.genomic_start0,
         )
         external_three_interval0 = (
-            three_end0,
-            three_end0 + GENOTYPING_EXTERNAL_FLANK_NT,
+            three_arm.genomic_end0,
+            three_arm.genomic_end0 + GENOTYPING_EXTERNAL_FLANK_NT,
         )
     else:
         external_five_interval0 = (
-            five_end0,
-            five_end0 + GENOTYPING_EXTERNAL_FLANK_NT,
+            five_arm.genomic_end0,
+            five_arm.genomic_end0 + GENOTYPING_EXTERNAL_FLANK_NT,
         )
         external_three_interval0 = (
-            max(0, three_start0 - GENOTYPING_EXTERNAL_FLANK_NT),
-            three_start0,
+            max(0, three_arm.genomic_start0 - GENOTYPING_EXTERNAL_FLANK_NT),
+            three_arm.genomic_start0,
         )
     external_five_chromosome = client.region_sequence(
         record.species,
@@ -1755,7 +1923,6 @@ def design_online(
     )
 
     current_cdna = list(record.cdna)
-    mutation_warnings: list[str] = []
     five_arm, warnings = _domesticate_sapi_sites(
         arm=five_arm,
         record=record,
@@ -1869,6 +2036,7 @@ def design_tubb5_fixture(
         chromosome_forward_sequence=reverse_complement(five_gene),
         gene_strand=TUBB5_STRAND,
     )
+
     three_arm = _make_arm(
         name="3-prime homology arm",
         chromosome=TUBB5_CHROMOSOME,
@@ -1877,6 +2045,23 @@ def design_tubb5_fixture(
         chromosome_forward_sequence=reverse_complement(three_gene),
         gene_strand=TUBB5_STRAND,
     )
+
+    boundary_warnings: list[str] = []
+    five_arm, adjustment_note = adjust_homology_arm_boundary_for_synthesis(
+        five_arm,
+        arm_role="five_prime",
+        gene_strand=TUBB5_STRAND,
+    )
+    if adjustment_note:
+        boundary_warnings.append(adjustment_note)
+    three_arm, adjustment_note = adjust_homology_arm_boundary_for_synthesis(
+        three_arm,
+        arm_role="three_prime",
+        gene_strand=TUBB5_STRAND,
+    )
+    if adjustment_note:
+        boundary_warnings.append(adjustment_note)
+    five_cdna_start0 = TUBB5_INSERTION_CDNA0 - five_arm.length
 
     margin = guide_window + 30
     transcript_local_start = TUBB5_INSERTION_CDNA0 - margin
@@ -1967,9 +2152,9 @@ def design_tubb5_fixture(
         external_three_sequence=cdna[
             TUBB5_INSERTION_CDNA0
             + 3
-            + arm_length:TUBB5_INSERTION_CDNA0
+            + three_arm.length:TUBB5_INSERTION_CDNA0
             + 3
-            + arm_length
+            + three_arm.length
             + GENOTYPING_EXTERNAL_FLANK_NT
         ],
         external_three_interval0=(
@@ -1977,6 +2162,7 @@ def design_tubb5_fixture(
             three_arm.genomic_start0,
         ),
         extra_warnings=[
+            *boundary_warnings,
             "Tubb5 has a functionally important C-terminal tail; a C-terminal fluorescent fusion may perturb tubulin interactions or post-translational modification. This test is computational only.",
             "The bundled transcript is ENSMUST00000001566.10, matching the current Ensembl canonical Tubb5-201 listing checked for this build. Live mode should still be rerun before experimental use.",
         ],

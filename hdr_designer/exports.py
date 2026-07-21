@@ -295,9 +295,16 @@ def locus_context_genbank(
                 f"Invalid {context_name} locus feature coordinates: "
                 f"{item.get('label')} {start0}:{end0}"
             )
-        qualifiers = {"label": [str(item.get("label", item.get("type", "feature")))]}
+        label = str(item.get("label", item.get("type", "feature")))
+        qualifiers = {"label": [label]}
         if item.get("note"):
             qualifiers["note"] = [str(item["note"])]
+        for arm, label_prefix in (
+            (result.five_prime_arm, "5-prime homology arm"),
+            (result.three_prime_arm, "3-prime homology arm"),
+        ):
+            if arm.boundary_adjustment and label.startswith(label_prefix):
+                qualifiers.setdefault("note", []).append(arm.correction_note)
         record.features.append(
             SeqFeature(
                 FeatureLocation(start0, end0, strand=int(item.get("strand", 1))),
@@ -368,12 +375,17 @@ def assembled_plasmid_genbank(
                 f"Invalid assembled-plasmid feature coordinates: {item.get('label')} "
                 f"{start0}:{end0}"
             )
-        qualifiers: dict[str, list[str]] = {
-            "label": [str(item.get("label", item.get("type", "feature")))],
-        }
+        label = str(item.get("label", item.get("type", "feature")))
+        qualifiers: dict[str, list[str]] = {"label": [label]}
         note = item.get("note")
         if note:
             qualifiers["note"] = [str(note)]
+        for arm, label_prefix in (
+            (result.five_prime_arm, "5-prime homology arm"),
+            (result.three_prime_arm, "3-prime homology arm"),
+        ):
+            if arm.boundary_adjustment and label.startswith(label_prefix):
+                qualifiers.setdefault("note", []).append(arm.correction_note)
         tag_name = str(result.donor_payload.get("tag_name", "mNeonGreen"))
         if item.get("type") == "CDS" and str(item.get("label", "")) in {
             tag_name,
@@ -605,6 +617,8 @@ def _arm_report(arm: HomologyArm) -> list[str]:
         f"  Raw internal SapI sites: {len(arm.sapi_sites)}",
         f"  Final internal SapI sites: {len(arm.final_sapi_sites)}",
     ]
+    if arm.boundary_adjustment:
+        lines.append(f"  Boundary adjustment: {arm.correction_note}")
     if arm.mutations:
         lines.append("  Final automatic sequence changes:")
         for mutation in arm.mutations:
@@ -669,7 +683,11 @@ def design_report(result: DesignResult) -> str:
         f"Tagging mode: {result.terminus}",
         f"Nuclease: {result.nuclease_mode}",
         f"Backbone: {result.backbone_name}, {backbone_identifier}",
-        f"Homology arms: {result.homology_arm_length} bp each",
+        (
+            f"Homology arms: {result.five_prime_arm.length} bp UHA / "
+            f"{result.three_prime_arm.length} bp DHA "
+            f"(requested {result.homology_arm_length} bp each)"
+        ),
         "Off-target analysis: not performed (requested)",
         f"Guide-ranking note: {result.guide_scoring_note}",
         f"Custom donor backbone support: {'enabled' if result.custom_backbones_supported else 'disabled'}",

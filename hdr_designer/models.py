@@ -126,6 +126,8 @@ class HomologyArm:
     final_sapi_sites: list[dict[str, Any]] = field(default_factory=list)
     mutations: list[SequenceMutation] = field(default_factory=list)
     correction_note: str = ""
+    requested_length: int = 0
+    boundary_adjustment: dict[str, Any] = field(default_factory=dict)
 
     @property
     def genomic_interval_1based(self) -> str:

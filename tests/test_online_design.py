@@ -50,10 +50,11 @@ class SyntheticEnsemblClient:
         if strand not in {-1, 1}:
             raise ValueError("strand must be -1 or 1")
         self.species = SPECIES[species_key]
-        chromosome = list("A" * 4000)
+        background = "ATGCACTA"
+        chromosome = list((background * 501)[:4000])
         exon_start0 = 1000
         exon_end0 = 2500
-        cdna = list("A" * (exon_end0 - exon_start0))
+        cdna = list((background * 188)[: exon_end0 - exon_start0])
         cds_start0 = 31
         c_terminal_boundary0 = 2000
         stop_cdna0 = c_terminal_boundary0 - exon_start0

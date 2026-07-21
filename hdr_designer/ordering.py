@@ -14,42 +14,18 @@ from .exports import (
 )
 from .generate_oligos_from_guides import guide_oligos_csv
 from .models import DesignResult, HomologyArm
+from .synthesis_qc import (
+    TWIST_MAX_HOMOPOLYMER_NT,
+    TWIST_ORDERING_RULESET,
+    homopolymer_findings,
+)
 
 
-TWIST_MAX_HOMOPOLYMER_NT = 14
-TWIST_ORDERING_RULESET = "HDR Tag Designer Twist preflight v1 (2026-07-21)"
 ORDERING_GENBANK_DATE = "01-JAN-1980"
 
 
 class OrderingError(ValueError):
     """Raised when a design is not ready to be packaged for ordering."""
-
-
-def homopolymer_findings(
-    sequence: str,
-    *,
-    max_allowed_nt: int = TWIST_MAX_HOMOPOLYMER_NT,
-) -> list[dict[str, Any]]:
-    """Return every homopolymer run longer than ``max_allowed_nt``."""
-    normalized = sequence.upper()
-    findings: list[dict[str, Any]] = []
-    run_start0 = 0
-    for position0 in range(1, len(normalized) + 1):
-        if position0 < len(normalized) and normalized[position0] == normalized[run_start0]:
-            continue
-        run_length = position0 - run_start0
-        if run_length > max_allowed_nt:
-            findings.append(
-                {
-                    "base": normalized[run_start0],
-                    "start0": run_start0,
-                    "end0": position0,
-                    "interval_1based": f"{run_start0 + 1}-{position0}",
-                    "length_nt": run_length,
-                }
-            )
-        run_start0 = position0
-    return findings
 
 
 def _arm_ordering_findings(arm: HomologyArm) -> list[dict[str, Any]]:
@@ -65,11 +41,17 @@ def twist_ordering_qc(result: DesignResult) -> dict[str, Any]:
         *_arm_ordering_findings(result.five_prime_arm),
         *_arm_ordering_findings(result.three_prime_arm),
     ]
+    adjustments = [
+        {"arm": arm.name, **arm.boundary_adjustment}
+        for arm in (result.five_prime_arm, result.three_prime_arm)
+        if arm.boundary_adjustment
+    ]
     return {
         "status": "ERROR" if findings else "PASS",
         "ruleset": TWIST_ORDERING_RULESET,
         "max_homopolymer_nt": TWIST_MAX_HOMOPOLYMER_NT,
         "findings": findings,
+        "boundary_adjustments": adjustments,
         "detail": (
             f"Found {len(findings)} homopolymer run(s) longer than "
             f"{TWIST_MAX_HOMOPOLYMER_NT} nt in the final homology arms."
@@ -152,12 +134,16 @@ def twist_sequences_csv(result: DesignResult) -> str:
         "SHA-256",
         "Internal QC Status",
         "Internal QC Ruleset",
+        "Requested Arm Length",
+        "Final Arm Length",
+        "Boundary Adjustment",
         "Twist Portal Screening",
     ]
     output = io.StringIO()
     writer = csv.DictWriter(output, fieldnames=fields, lineterminator="\n")
     writer.writeheader()
-    for arm_label, sequence_value in rows:
+    arms = (result.five_prime_arm, result.three_prime_arm)
+    for (arm_label, sequence_value), arm in zip(rows, arms):
         sequence = str(sequence_value).upper()
         writer.writerow(
             {
@@ -170,6 +156,9 @@ def twist_sequences_csv(result: DesignResult) -> str:
                 "SHA-256": hashlib.sha256(sequence.encode("ascii")).hexdigest(),
                 "Internal QC Status": qc["status"],
                 "Internal QC Ruleset": qc["ruleset"],
+                "Requested Arm Length": arm.requested_length or arm.length,
+                "Final Arm Length": arm.length,
+                "Boundary Adjustment": arm.correction_note,
                 "Twist Portal Screening": "REQUIRED",
             }
         )

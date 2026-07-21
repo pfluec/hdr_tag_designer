@@ -74,7 +74,8 @@ def _show_arm(arm: HomologyArm) -> None:
             [{
                 "Arm": arm.name,
                 "Reference interval": arm.genomic_interval_1based,
-                "Length (bp)": arm.length,
+                "Requested length (bp)": arm.requested_length or arm.length,
+                "Final length (bp)": arm.length,
                 "GC (%)": arm.gc_percent,
                 "Raw SapI sites": len(arm.sapi_sites),
                 "Final SapI sites": len(arm.final_sapi_sites),
@@ -84,6 +85,8 @@ def _show_arm(arm: HomologyArm) -> None:
         hide_index=True,
         width="stretch",
     )
+    if arm.boundary_adjustment:
+        st.info(arm.correction_note)
     if arm.mutations:
         st.markdown("**Verified automatic changes in final arm**")
         st.dataframe(
@@ -156,7 +159,10 @@ def _show_result(result: DesignResult) -> None:
     cols[0].metric("Assembly", result.assembly)
     cols[1].metric("Transcript", result.transcript_id)
     cols[2].metric("Guide", "selected" if result.guides else "none")
-    cols[3].metric("Arms", f"{result.homology_arm_length} bp")
+    cols[3].metric(
+        "Final UHA / DHA",
+        f"{result.five_prime_arm.length} / {result.three_prime_arm.length} bp",
+    )
     cols[4].metric("Native protein", f"{result.protein_length_aa} aa")
     cols[5].metric(
         "Fusion",

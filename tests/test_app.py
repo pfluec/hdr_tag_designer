@@ -26,16 +26,17 @@ class StreamlitAppTest(unittest.TestCase):
         metrics = {metric.label: metric.value for metric in app.metric}
         self.assertEqual(metrics["Transcript"], "ENSMUST00000001566.10")
         self.assertEqual(metrics["Fusion"], "686 aa")
-        self.assertEqual(metrics["Final plasmid"], "3950 bp")
+        self.assertEqual(metrics["Final plasmid"], "3618 bp")
+        self.assertEqual(metrics["Final UHA / DHA"], "600 / 268 bp")
         self.assertEqual(metrics["Final SapI sites"], "0")
         self.assertEqual(metrics["Arm SapI sites found"], "1")
         self.assertEqual(metrics["Arm SapI sites resolved"], "1")
         self.assertEqual(metrics["Arm SapI sites remaining"], "0")
         self.assertEqual(len(app.get("download_button")), 1)
         self.assertEqual(app.get("download_button")[0].label, "Ordering package (.zip)")
-        self.assertTrue(app.get("download_button")[0].disabled)
+        self.assertFalse(app.get("download_button")[0].disabled)
         self.assertTrue(
-            any("3-prime homology arm, bases 256-281: T x 26" in item.value for item in app.error)
+            any("shortened from 600 to 268 bp" in item.value for item in app.info)
         )
 
         # A normal Streamlit rerun (including older download behavior) must
@@ -47,7 +48,7 @@ class StreamlitAppTest(unittest.TestCase):
             [message.value for message in app.success],
         )
         self.assertEqual(len(app.get("download_button")), 1)
-        self.assertTrue(app.get("download_button")[0].disabled)
+        self.assertFalse(app.get("download_button")[0].disabled)
 
     def test_n_terminal_selection_uses_169226_and_disables_fixture(self) -> None:
         app_path = Path(__file__).resolve().parents[1] / "app.py"

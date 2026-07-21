@@ -9,9 +9,13 @@ import zipfile
 
 from Bio import SeqIO
 
-from hdr_designer.design import design_tubb5_fixture
+from hdr_designer.design import (
+    adjust_homology_arm_boundary_for_synthesis,
+    design_tubb5_fixture,
+)
 from hdr_designer.exports import genotyping_primers_csv
 from hdr_designer.generate_oligos_from_guides import guide_oligos, guide_oligos_csv
+from hdr_designer.models import HomologyArm
 from hdr_designer.ordering import (
     OrderingError,
     design_identity,
@@ -21,32 +25,30 @@ from hdr_designer.ordering import (
     twist_ordering_qc,
     twist_sequences_csv,
 )
+from hdr_designer.sequence import gc_percent, reverse_complement
 
 
 class OrderingExportTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.tubb5 = design_tubb5_fixture()
-        cls.ordering_ready = copy.deepcopy(cls.tubb5)
+        cls.ordering_ready = cls.tubb5
 
-        arm = cls.ordering_ready.three_prime_arm
-        old_arm = arm.final_gene_oriented_sequence
-        findings = homopolymer_findings(old_arm)
-        assert len(findings) == 1
-        position0 = findings[0]["start0"] + findings[0]["length_nt"] // 2
-        replacement = "A" if old_arm[position0] != "A" else "C"
-        new_arm = old_arm[:position0] + replacement + old_arm[position0 + 1 :]
-        arm.corrected_gene_oriented_sequence = new_arm
-
-        for key in (
-            "dha_synthesis_fragment_5to3",
-            "assembled_donor_insert_5to3",
-            "assembled_plasmid_5to3",
-        ):
-            value = str(cls.ordering_ready.cloning_fragments[key])
-            cls.ordering_ready.cloning_fragments[key] = value.replace(old_arm, new_arm, 1)
-        edited = cls.ordering_ready.locus_contexts["edited"]
-        edited["sequence_5to3"] = str(edited["sequence_5to3"]).replace(old_arm, new_arm, 1)
+    @staticmethod
+    def _arm(sequence: str, strand: int, name: str) -> HomologyArm:
+        return HomologyArm(
+            name=name,
+            length=len(sequence),
+            chromosome="1",
+            genomic_start0=1_000,
+            genomic_end0=1_000 + len(sequence),
+            gene_oriented_sequence=sequence,
+            chromosome_forward_sequence=(
+                sequence if strand == 1 else reverse_complement(sequence)
+            ),
+            gc_percent=gc_percent(sequence),
+            requested_length=len(sequence),
+        )
 
     def test_selected_guide_oligos_follow_supplied_function(self) -> None:
         rows = guide_oligos("Tubb5_selected", "GAGGCAGAAGAGGAGGCCTA")
@@ -107,24 +109,112 @@ class OrderingExportTest(unittest.TestCase):
             ],
         )
 
-    def test_tubb5_is_blocked_by_exact_final_arm_homopolymer(self) -> None:
-        qc = twist_ordering_qc(self.tubb5)
-        self.assertEqual(qc["status"], "ERROR")
-        self.assertEqual(
-            qc["findings"],
-            [
-                {
-                    "arm": "3-prime homology arm",
-                    "base": "T",
-                    "start0": 255,
-                    "end0": 281,
-                    "interval_1based": "256-281",
-                    "length_nt": 26,
-                }
-            ],
+    def test_uha_boundary_keeps_insertion_proximal_suffix_on_both_strands(self) -> None:
+        sequence = "CG" * 100 + "A" * 20 + "TG" * 190
+        for strand in (1, -1):
+            with self.subTest(strand=strand):
+                original = self._arm(sequence, strand, "5-prime homology arm")
+                adjusted, note = adjust_homology_arm_boundary_for_synthesis(
+                    original,
+                    arm_role="five_prime",
+                    gene_strand=strand,
+                )
+                self.assertEqual(adjusted.length, 390)
+                self.assertTrue(adjusted.gene_oriented_sequence.startswith("A" * 10))
+                self.assertEqual(homopolymer_findings(adjusted.gene_oriented_sequence), [])
+                self.assertIn("guide/SapI-facing arm edge", str(note))
+                if strand == 1:
+                    self.assertEqual(
+                        (adjusted.genomic_start0, adjusted.genomic_end0),
+                        (1_210, 1_600),
+                    )
+                else:
+                    self.assertEqual(
+                        (adjusted.genomic_start0, adjusted.genomic_end0),
+                        (1_000, 1_390),
+                    )
+
+    def test_dha_boundary_keeps_insertion_proximal_prefix_on_both_strands(self) -> None:
+        sequence = "CG" * 150 + "T" * 20 + "AG" * 140
+        for strand in (1, -1):
+            with self.subTest(strand=strand):
+                original = self._arm(sequence, strand, "3-prime homology arm")
+                adjusted, _ = adjust_homology_arm_boundary_for_synthesis(
+                    original,
+                    arm_role="three_prime",
+                    gene_strand=strand,
+                )
+                self.assertEqual(adjusted.length, 310)
+                self.assertTrue(adjusted.gene_oriented_sequence.endswith("T" * 10))
+                self.assertEqual(homopolymer_findings(adjusted.gene_oriented_sequence), [])
+                if strand == 1:
+                    self.assertEqual(
+                        (adjusted.genomic_start0, adjusted.genomic_end0),
+                        (1_000, 1_310),
+                    )
+                else:
+                    self.assertEqual(
+                        (adjusted.genomic_start0, adjusted.genomic_end0),
+                        (1_290, 1_600),
+                    )
+
+    def test_multiple_runs_select_boundary_that_removes_all_long_runs(self) -> None:
+        sequence = (
+            "AG" * 60
+            + "A" * 20
+            + "TG" * 80
+            + "C" * 18
+            + "AT" * 141
         )
-        with self.assertRaisesRegex(OrderingError, "T x 26"):
-            ordering_package_zip(self.tubb5)
+        uha, _ = adjust_homology_arm_boundary_for_synthesis(
+            self._arm(sequence, 1, "5-prime homology arm"),
+            arm_role="five_prime",
+            gene_strand=1,
+        )
+        dha, _ = adjust_homology_arm_boundary_for_synthesis(
+            self._arm(sequence, 1, "3-prime homology arm"),
+            arm_role="three_prime",
+            gene_strand=1,
+        )
+        self.assertTrue(uha.gene_oriented_sequence.startswith("C" * 9))
+        self.assertTrue(dha.gene_oriented_sequence.endswith("A" * 10))
+        self.assertEqual(homopolymer_findings(uha.gene_oriented_sequence), [])
+        self.assertEqual(homopolymer_findings(dha.gene_oriented_sequence), [])
+
+    def test_tubb5_moves_dha_boundary_into_homopolymer(self) -> None:
+        qc = twist_ordering_qc(self.tubb5)
+        self.assertEqual(qc["status"], "PASS")
+        self.assertEqual(qc["findings"], [])
+        adjustment = self.tubb5.three_prime_arm.boundary_adjustment
+        self.assertEqual(
+            adjustment,
+            {
+                "status": "ADJUSTED",
+                "reason": "Twist homopolymer ordering limit",
+                "rule_max_nt": 14,
+                "original_length_nt": 600,
+                "final_length_nt": 268,
+                "trimmed_bases_nt": 332,
+                "original_genomic_interval_1based": "17:36145274-36145873",
+                "final_genomic_interval_1based": "17:36145606-36145873",
+                "boundary_side": "gene-oriented 3-prime distal boundary",
+                "homopolymer_base": "T",
+                "original_run_interval_1based": "256-281",
+                "original_run_length_nt": 26,
+                "retained_boundary_run_length_nt": 13,
+            },
+        )
+        self.assertTrue(self.tubb5.three_prime_arm.final_gene_oriented_sequence.endswith("T" * 13))
+        self.assertEqual(qc["boundary_adjustments"][0]["arm"], "3-prime homology arm")
+        self.assertGreater(len(ordering_package_zip(self.tubb5)), 0)
+
+    def test_unresolved_final_arm_homopolymer_remains_a_package_guard(self) -> None:
+        blocked = copy.deepcopy(self.tubb5)
+        sequence = blocked.three_prime_arm.final_gene_oriented_sequence
+        blocked.three_prime_arm.corrected_gene_oriented_sequence = "A" * 15 + sequence[15:]
+        self.assertEqual(twist_ordering_qc(blocked)["status"], "ERROR")
+        with self.assertRaisesRegex(OrderingError, "homopolymer validation failed"):
+            ordering_package_zip(blocked)
 
     def test_twist_csv_contains_final_synthesis_fragments(self) -> None:
         rows = list(csv.DictReader(io.StringIO(twist_sequences_csv(self.ordering_ready))))
@@ -142,7 +232,13 @@ class OrderingExportTest(unittest.TestCase):
             self.assertEqual(int(row["Length"]), len(sequence))
             self.assertEqual(row["SHA-256"], hashlib.sha256(sequence.encode("ascii")).hexdigest())
             self.assertEqual(row["Internal QC Status"], "PASS")
+            self.assertEqual(row["Internal QC Ruleset"], "HDR Tag Designer Twist preflight v2 (2026-07-21)")
             self.assertEqual(row["Twist Portal Screening"], "REQUIRED")
+        self.assertEqual(rows[0]["Requested Arm Length"], "600")
+        self.assertEqual(rows[0]["Final Arm Length"], "600")
+        self.assertEqual(rows[1]["Requested Arm Length"], "600")
+        self.assertEqual(rows[1]["Final Arm Length"], "268")
+        self.assertIn("shortened from 600 to 268 bp", rows[1]["Boundary Adjustment"])
 
     def test_zip_is_deterministic_and_contains_only_supported_outputs(self) -> None:
         first = ordering_package_zip(self.ordering_ready)

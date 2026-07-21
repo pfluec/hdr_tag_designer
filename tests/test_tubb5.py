@@ -142,8 +142,8 @@ class Tubb5DesignTest(unittest.TestCase):
         self.assertEqual(contexts["external_flank_length_nt"], 300)
         wild_type = contexts["wild_type"]
         edited = contexts["edited"]
-        self.assertEqual(wild_type["length_nt"], 300 + 600 + 3 + 600 + 300)
-        self.assertEqual(edited["length_nt"], 300 + 600 + 729 + 600 + 300)
+        self.assertEqual(wild_type["length_nt"], 300 + 600 + 3 + 268 + 300)
+        self.assertEqual(edited["length_nt"], 300 + 600 + 729 + 268 + 300)
         self.assertEqual(len(wild_type["sequence_5to3"]), wild_type["length_nt"])
         self.assertEqual(len(edited["sequence_5to3"]), edited["length_nt"])
         self.assertIn(
@@ -179,6 +179,17 @@ class Tubb5DesignTest(unittest.TestCase):
                 note = feature.qualifiers.get("note", [""])[0]
                 primer_sequence = note.split("5'-", 1)[1].split("-3'", 1)[0]
                 self.assertEqual(str(feature.extract(record.seq)), primer_sequence)
+            dha_feature = next(
+                feature
+                for feature in record.features
+                if feature.qualifiers.get("label", [""])[0].startswith(
+                    "3-prime homology arm"
+                )
+            )
+            self.assertIn(
+                "shortened from 600 to 268 bp",
+                " ".join(dha_feature.qualifiers.get("note", [])),
+            )
 
     def test_insertion_stop_and_arms(self) -> None:
         self.assertEqual(self.result.insertion_boundary0, 36_145_876)
@@ -190,9 +201,12 @@ class Tubb5DesignTest(unittest.TestCase):
         five = self.result.five_prime_arm
         three = self.result.three_prime_arm
         self.assertEqual(five.length, 600)
-        self.assertEqual(three.length, 600)
+        self.assertEqual(three.length, 268)
+        self.assertEqual(three.requested_length, 600)
         self.assertEqual((five.genomic_start0, five.genomic_end0), (36_145_876, 36_146_476))
-        self.assertEqual((three.genomic_start0, three.genomic_end0), (36_145_273, 36_145_873))
+        self.assertEqual((three.genomic_start0, three.genomic_end0), (36_145_605, 36_145_873))
+        self.assertEqual(three.boundary_adjustment["original_run_length_nt"], 26)
+        self.assertEqual(three.boundary_adjustment["retained_boundary_run_length_nt"], 13)
         self.assertEqual(reverse_complement(five.gene_oriented_sequence), five.chromosome_forward_sequence)
         self.assertEqual(reverse_complement(three.gene_oriented_sequence), three.chromosome_forward_sequence)
 
@@ -267,9 +281,9 @@ class Tubb5DesignTest(unittest.TestCase):
         self.assertEqual(uha, CTERM_UHA_PREFIX + guide + five + CTERM_UHA_SUFFIX)
         self.assertEqual(dha, CTERM_DHA_PREFIX + three + guide + CTERM_DHA_SUFFIX)
         self.assertEqual(len(uha), 651)
-        self.assertEqual(len(dha), 651)
+        self.assertEqual(len(dha), 319)
         self.assertEqual(donor, guide + five + payload + three + guide)
-        self.assertEqual(len(donor), 1975)
+        self.assertEqual(len(donor), 1643)
         self.assertEqual(
             self.result.cloning_fragments["expected_sapi_overhangs"],
             {
@@ -328,8 +342,8 @@ class Tubb5DesignTest(unittest.TestCase):
     def test_full_circular_plasmid_assembly(self) -> None:
         fragments = self.result.cloning_fragments
         plasmid = fragments["assembled_plasmid_5to3"]
-        self.assertEqual(len(plasmid), 3950)
-        self.assertEqual(fragments["assembled_plasmid_length_nt"], 3950)
+        self.assertEqual(len(plasmid), 3618)
+        self.assertEqual(fragments["assembled_plasmid_length_nt"], 3618)
         self.assertEqual(fragments["assembled_plasmid_topology"], "circular")
         self.assertEqual(fragments["assembled_plasmid_sapi_site_count"], 0)
         self.assertEqual(fragments["assembled_plasmid_sapi_sites"], [])
@@ -344,14 +358,14 @@ class Tubb5DesignTest(unittest.TestCase):
         )
         coordinates = fragments["assembly_coordinate_map"]
         self.assertEqual(coordinates["donor_start0"], 1085)
-        self.assertEqual(coordinates["donor_end0"], 3060)
+        self.assertEqual(coordinates["donor_end0"], 2728)
         self.assertEqual(plasmid[1082:1085], "TAC")
-        self.assertEqual(plasmid[3060:3063], "AAT")
+        self.assertEqual(plasmid[2728:2731], "AAT")
 
     def test_genbank_round_trip(self) -> None:
         text = assembled_plasmid_genbank(self.result)
         record = SeqIO.read(StringIO(text), "genbank")
-        self.assertEqual(len(record.seq), 3950)
+        self.assertEqual(len(record.seq), 3618)
         self.assertEqual(record.annotations["topology"], "circular")
         labels = {
             feature.qualifiers.get("label", [""])[0]
@@ -362,6 +376,16 @@ class Tubb5DesignTest(unittest.TestCase):
         self.assertIn("3-prime homology arm (DHA), final", labels)
         self.assertIn("SapI domestication", labels)
         self.assertNotIn("Guide-blocking mutation", labels)
+        dha_feature = next(
+            feature
+            for feature in record.features
+            if feature.qualifiers.get("label", [""])[0]
+            == "3-prime homology arm (DHA), final"
+        )
+        self.assertIn(
+            "shortened from 600 to 268 bp",
+            " ".join(dha_feature.qualifiers.get("note", [])),
+        )
 
     def test_selected_target_is_absent_from_edited_locus(self) -> None:
         edited = self.result.junctions["edited_locus_window_5to3"]
@@ -407,7 +431,8 @@ class Tubb5DesignTest(unittest.TestCase):
         self.assertIn("No extra guide-blocking mutation is required", report)
         self.assertNotIn("Guide-blocking mutation: arm base", report)
         self.assertIn("uha_synthesis_fragment_5to3", report)
-        self.assertIn("Simulated final plasmid: 3950 bp", report)
+        self.assertIn("Simulated final plasmid: 3618 bp", report)
+        self.assertIn("shortened from 600 to 268 bp", report)
         self.assertIn("GAGGCAGAAGAGGAGGCCTA", guides_csv(self.result))
         primer_csv = genotyping_primers_csv(self.result)
         self.assertIn("Tubb5_wt_5_fwd", primer_csv)
