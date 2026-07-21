@@ -1,6 +1,6 @@
 # HDR Tag Designer — Development Handoff
 
-**Project version reviewed:** `0.5.1` (working tree; not yet committed)
+**Project version reviewed:** `0.6.0` (working tree; not yet committed)
 **Handoff date:** 2026-07-21
 **Purpose:** Continue development, debugging, and validation of the local HDR-tagging design tool in a new session or local coding environment.
 
@@ -8,9 +8,9 @@
 
 ## Future features — prioritized backlog
 
-These are explicitly requested future features. They are not implemented in version `0.5.1`.
+F1 was implemented in version `0.6.0`. F3 has a working baseline in `0.6.0`; its remaining genome-wide uniqueness check is documented below. F2 remains the next separate future feature.
 
-### F1. Show the reference and final edited guide-binding sequence
+### F1. Show the reference and final edited guide-binding sequence — IMPLEMENTED IN 0.6.0
 
 Extend the **Selected guide** section so a user can directly compare what Cas9 sees before and after the donor edit.
 
@@ -46,7 +46,7 @@ Do not guess or permanently hard-code Twist thresholds from memory. At implement
 
 Possible later extension: expose multiple eligible sequence-complexity/SapI fixes for user selection. Until an interactive mutation-choice workflow exists, keep safe changes automatic and make the exact selection rationale visible.
 
-### F3. Genotyping primer design
+### F3. Genotyping primer design — BASELINE IMPLEMENTED IN 0.6.0
 
 Design and report three genotyping PCR assays for every sequence-complete donor design:
 
@@ -84,16 +84,19 @@ Implementation should use the final edited locus and assembled payload sequences
 Development is continuing on the Git branch:
 
 ```text
-fix/noncoding-sapi-domestication
+feat/custom-payloads-guide-context-genotyping
 ```
 
-Version `0.5.1` retains the automatic-mutation and backbone work from `0.5.0` and fixes non-coding SapI domestication:
+Version `0.6.0` retains the automatic-mutation and N/C backbone work from `0.5.1` and adds:
 
-1. complete N-terminal tagging with the uploaded Addgene #169226 backbone;
-2. reusable frozen `BackboneDefinition` configurations for #169226 and #169227;
-3. shared N/C fragment, primer, payload, circular-assembly, annotation, and validation code;
-4. guarded custom SnapGene `.dna` upload classified from its SapI overhang order.
-5. automatic one-base domestication of eligible non-coding SapI sites in homology arms.
+1. complex custom payload cassettes without a forced single-ORF interpretation;
+2. explicit warnings for non-frame, multi-ORF, missing-linker, or internal-stop payloads;
+3. reference, post-point-mutation, compact actual-edited, and full actual-edited guide-target sequences;
+4. WT-locus, 5-prime junction, and 3-prime junction primer design with Primer3 thermodynamics;
+5. junction genomic primers outside the homology arms and payload primers at least 150 bp from the tested junction;
+6. genotyping display plus TXT, CSV, FASTA amplicon, and JSON exports.
+7. annotated WT and edited linear locus contexts extending 300 bp beyond both homology arms, with arm, payload/native-junction, and genotyping-primer features.
+8. download buttons use Streamlit's no-rerun mode, and the latest completed `DesignResult` is restored from session state after any incidental rerun instead of resetting the page.
 
 The previous release's behavior remains intact:
 
@@ -108,12 +111,15 @@ The previous release's behavior remains intact:
 Current validation state:
 
 ```text
-33/33 unittest tests pass
+36/36 unittest tests pass
 Bundled Tubb5 fixture remains sequence-complete
 Exact #169227 Tubb5 sequence/coordinate/plasmid regressions pass unchanged
 Synthetic N-terminal designs pass on plus and minus gene strands
 Addgene #169226 yields a 3947-bp SapI-free assembled plasmid with 600-bp arms
 Custom-upload classification and complete assembly path pass using #169226 as a fixture
+Complex multi-ORF/non-frame payload classification and non-blocking assembly are covered
+Tubb5 produces all three constrained genotyping primer pairs
+Live Actb N-terminal validation remains sequence-complete and produces all three primer pairs
 ```
 
 The bundled offline Tubb5 fixture remains `ENSMUST00000001566.10` for reproducibility. Ensembl resolved the same stable mouse transcript as version `.11` during the 2026-07-21 live check.
@@ -141,7 +147,7 @@ Live regression check for mouse **Actb**, N-terminal mode, canonical `ENSMUST000
 - final arm SapI sites: zero;
 - final result: sequence-complete 3,947-bp N-terminal plasmid with zero residual SapI sites.
 
-The former generic `REVIEW REQUIRED` status was renamed to `DESIGN BLOCKED - NO SEQUENCE-COMPLETE OUTPUT`, because the current UI has no sequence-editing/review action. A future mutation-choice interface may expose the eligible non-coding SapI candidates; version 0.5.1 selects automatically and records the exact ranking rationale.
+The former generic `REVIEW REQUIRED` status was renamed to `DESIGN BLOCKED - NO SEQUENCE-COMPLETE OUTPUT`, because the current UI has no sequence-editing/review action. A future mutation-choice interface may expose the eligible non-coding SapI candidates; version 0.6.0 selects automatically and records the exact ranking rationale.
 
 ### 0.2 N-terminal and custom-backbone behavior now implemented
 
@@ -156,32 +162,40 @@ The newly supplied `data/bollen_supplementary_s1.docx` and `data/addgene-169226.
 - a standard 600/600-bp design produces a 1,972-bp donor insert and 3,947-bp final plasmid;
 - predicted edited protein order is native initiator methionine, payload, then native residue 2 onward.
 
-Custom `.dna` uploads currently require all of the following before release:
+Custom `.dna` uploads currently require all of the following structural properties before release:
 
 - circular SnapGene input;
 - exactly four SapI sites;
 - exact supported order `TAC/GGC/TGA/AAT` (C) or `TAC/GTG/AGC/AAT` (N);
 - cassette coordinates in increasing file order (a cassette crossing the sequence origin must be rotated first);
-- an in-frame extracted payload;
-- the GGGGSAS linker in the architecture-specific position;
-- no internal in-frame stop;
 - selected UI terminus matching the inferred backbone terminus.
 
-Passing uploads use the same full donor/plasmid assembly, junction checks, residual-SapI check, fusion translation, exports, and QC gates as the built-ins.
+Payload frame, linker, ambiguity, and internal-stop checks are now interpretation checks rather than release gates. A conventional in-frame cassette with the architecture-specific GGGGSAS linker receives a fusion translation. Every other cassette is labelled `complex cassette`, produces a visible warning, and is assembled without asserting a single fusion protein. Passing uploads use the same full donor/plasmid assembly, junction checks, residual-SapI check, exports, and QC gates as the built-ins.
 
-### 0.3 Important implementation locations
+### 0.3 Guide-context and genotyping behavior added in 0.6.0
+
+Every ranked guide now records the reference 23-nt target, the same target after all donor point mutations, and the actual donor-allele sequence across the original genomic span. When an insertion splits the target, the compact representation includes `[INSERT n nt]`; the full inserted sequence is retained separately. This prevents presenting a misleading synthetic 23-nt final target. Tubb5 C-terminal and synthetic N-terminal plus/minus-strand regressions cover the reconstruction. The live Actb result shows its synonymous `GAC -> GAT` guide-blocking change directly in the post-mutation target.
+
+Genotyping primer design is implemented in `hdr_designer/primers.py` with Primer3/primer3-py. The current fixed rules are 18-27 nt, 57-63 C, 35-65% GC, no homopolymer longer than four, pair Tm difference at most 3 C, and hairpin/homodimer/heterodimer Tm below 45 C. Candidate pairs must be unique within the constructed assay template. External locus primers bind in a 300-bp fetched region outside the relevant arm and must be absent in both orientations from the complete assembled donor plasmid. Payload primers are keyed by SHA-256 of the actual payload and prioritized deterministically for reuse across loci where a compatible genomic partner exists.
+
+The WT assay uses two external genomic primers and distinguishes alleles by product size. The 5-prime junction assay uses an external 5-prime genomic forward primer plus a payload reverse primer whose binding start is at least 150 bp from the 5-prime junction. The 3-prime assay uses a payload forward primer whose binding end is at least 150 bp from the 3-prime junction plus an external 3-prime genomic reverse primer.
+
+Important remaining limitation: genome-wide primer uniqueness is not computed locally. The app marks this check `NOT RUN` and tells users to confirm every pair with Primer-BLAST before ordering. Donor-plasmid specificity and uniqueness within the modeled assay template are enforced automatically. This limitation should not be silently removed from the UI or reports until a real reference-genome specificity backend exists.
+
+### 0.4 Important implementation locations
 
 - `hdr_designer/backbones.py`: built-in definitions, SapI classification, payload extraction, custom `.dna` inference, shared synthesis fragments, and shared plasmid assembly.
 - `hdr_designer/design.py`: transcript/genome mapping, arm generation, generic synonymous mutation search, guide blocking, SapI domestication, N/C fusion placement, and final validation gates.
+- `hdr_designer/primers.py`: constrained WT/junction primer search, Primer3 thermodynamics, assay geometry, payload reuse keys, and donor-plasmid checks.
 - `hdr_designer/ensembl.py`: bounded retry behavior and transcript-parent/biotype validation.
-- `hdr_designer/exports.py`: mutation-aware exports and `sapi_qc_rows()`.
-- `app.py`: dynamic N/C built-in selection, custom `.dna` upload, SapI QC, and mutation display.
+- `hdr_designer/exports.py`: mutation-aware exports, guide context, genotyping-primer CSV/report/FASTA output, and `sapi_qc_rows()`.
+- `app.py`: dynamic N/C built-in selection, custom `.dna` upload, SapI QC, guide-context comparison, and genotyping-primer display.
 - `tests/test_online_design.py`: PAM blocking, seed blocking, unsafe refusal, one/multiple SapI sites, and reverse-strand coverage.
 - `tests/test_guides.py`: nearest-guide precedence regression.
 - `tests/test_ensembl.py`: retry and transcript-validation coverage.
-- `tests/test_tubb5.py`: fixed sequence/coordinate, assembly, export, and SapI-QC regression.
+- `tests/test_tubb5.py`: fixed sequence/coordinate, assembly, export, SapI-QC, guide-context, and genotyping-primer regression.
 
-### 0.4 Next development objective
+### 0.5 Next development objective
 
 The next chunk of work is now:
 
@@ -245,7 +259,7 @@ The following choices were explicitly agreed upon:
 The current repository version is:
 
 ```text
-0.5.1 working tree on fix/noncoding-sapi-domestication
+0.6.0 working tree on feat/custom-payloads-guide-context-genotyping
 ```
 
 Main project structure:
@@ -546,11 +560,11 @@ The program currently exports combinations of:
 - JSON design data,
 - annotated GenBank assembled plasmid,
 - junction sequences,
-- PCR-primer tail templates.
+- complete homology-arm cloning primers with separately reported SapI/Golden Gate tails and genomic annealing regions.
 
 The Streamlit interface and TXT report also include SapI quality control: total/per-arm counts, every original motif and coordinate, resolution status, exact nucleotide/codon change, protein consequence, and selection reason.
 
-The current primer output only supplies the fixed Bollen cloning tails. It does not design locus-specific PCR annealing regions.
+Version 0.6.0 appends Primer3-evaluated, arm-end genomic annealing regions to all four fixed Bollen cloning tails. The UI colors tails and annealing regions separately and provides a copyable complete sequence. If a required donor mutation lies internally, outside both endpoint-primer footprints, the app warns that endpoint PCR alone cannot create the final arm and that synthesis or an additional mutagenesis strategy is required.
 
 ---
 
@@ -829,7 +843,7 @@ The application should attempt to:
 4. identify the replaceable cloning cassette;
 5. verify that each overhang is unique and compatible;
 6. reconstruct the unmodified payload;
-7. verify payload reading frame;
+7. classify payload reading-frame/linker compatibility without rejecting complex cassettes;
 8. confirm circular assembly;
 9. report unexpected internal restriction sites.
 
@@ -866,9 +880,7 @@ Before producing order-ready sequences, require:
 - no internal enzyme sites in final fragments,
 - valid donor topology,
 - correct payload orientation,
-- correct reading frame,
-- valid linker/tag junction,
-- correct stop-codon behavior,
+- explicit reading-frame/linker/stop interpretation,
 - complete circular-plasmid reconstruction where applicable.
 
 ---
@@ -879,10 +891,10 @@ Before producing order-ready sequences, require:
 
 Implement custom payloads in a deliberately narrow order:
 
-1. accept a named DNA coding sequence by paste or FASTA upload;
-2. accept optional linker DNA and explicit start/stop-codon flags;
-3. validate DNA alphabet, frame, translation, internal stops, terminus compatibility, junction translation, and SapI sites;
-4. pass a validated `PayloadDefinition` into the generalized backbone assembler;
+1. accept a named DNA cassette by paste or FASTA upload;
+2. accept optional linker DNA and explicit single-fusion versus complex-cassette intent;
+3. validate DNA alphabet, report frame/translation/internal stops, and enforce terminus, junction, and SapI compatibility without rejecting multi-ORF or non-frame cassettes;
+4. pass a classified `PayloadDefinition` into the generalized backbone assembler;
 5. propagate the payload name, checksum, sequence, translation, and validation decisions into JSON/TXT/FASTA/GenBank output.
 
 Defer protein-to-DNA reverse translation and codon optimization until the user can choose a target organism/codon table and the project has exact reproducibility tests. GenBank-feature selection and a local payload library can follow the initial DNA/FASTA path. Selection cassettes, artificial introns, and P2A architectures should remain explicit advanced configurations rather than being inferred from an arbitrary sequence.
@@ -981,7 +993,7 @@ The user should be warned when:
 
 # 19. Additional useful features
 
-## 19.1 PCR primer design
+## 19.1 PCR primer design — implemented baseline
 
 Add locus-specific annealing sequences for:
 

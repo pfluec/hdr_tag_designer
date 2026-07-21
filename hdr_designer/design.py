@@ -41,6 +41,7 @@ from .models import (
     SequenceMutation,
     TranscriptRecord,
 )
+from .primers import design_genotyping_primers, design_homology_arm_cloning_primers
 from .sequence import CODON_TABLE, find_motif_positions, gc_percent, reverse_complement, translate
 
 
@@ -50,6 +51,7 @@ class DesignError(RuntimeError):
 
 SPLICE_EDGE_EXCLUSION_NT = 3
 NONCODING_SPLICE_FLANK_EXCLUSION_NT = 6
+GENOTYPING_EXTERNAL_FLANK_NT = 300
 
 
 @dataclass(frozen=True)
@@ -998,6 +1000,215 @@ def _apply_cdna_changes_to_cds(
     return "".join(edited)
 
 
+def _populate_edited_guide_context(
+    guide: GuideCandidate,
+    *,
+    gene_strand: int,
+    insertion_boundary0: int,
+    removed_start0: int,
+    removed_end0: int,
+    payload_gene_oriented: str,
+    arms: tuple[HomologyArm, HomologyArm],
+) -> None:
+    """Record the actual donor-allele sequence spanning the original guide target."""
+    final_target = _donor_target_after_edits(
+        guide,
+        gene_strand=gene_strand,
+        arms=arms,
+    )
+    guide.final_target_with_pam_after_point_mutations = final_target
+    chromosome_sequence = (
+        final_target
+        if guide.chromosome_strand == "+"
+        else reverse_complement(final_target)
+    )
+    chromosome_pairs = list(
+        zip(range(guide.target_start0, guide.target_end0), chromosome_sequence)
+    )
+    if gene_strand == 1:
+        gene_pairs = chromosome_pairs
+        is_five_prime = lambda genomic0: genomic0 < insertion_boundary0
+    else:
+        gene_pairs = [
+            (genomic0, reverse_complement(base))
+            for genomic0, base in reversed(chromosome_pairs)
+        ]
+        is_five_prime = lambda genomic0: genomic0 >= insertion_boundary0
+
+    left_pairs = [pair for pair in gene_pairs if is_five_prime(pair[0])]
+    right_pairs = [pair for pair in gene_pairs if not is_five_prime(pair[0])]
+    removed_pairs = [
+        pair
+        for pair in gene_pairs
+        if removed_start0 <= pair[0] < removed_end0
+    ]
+    left = "".join(
+        base
+        for genomic0, base in left_pairs
+        if not removed_start0 <= genomic0 < removed_end0
+    )
+    right = "".join(
+        base
+        for genomic0, base in right_pairs
+        if not removed_start0 <= genomic0 < removed_end0
+    )
+    removed_gene = "".join(base for _, base in removed_pairs)
+    same_orientation = guide.chromosome_strand == ("+" if gene_strand == 1 else "-")
+    insertion_splits_target = (
+        guide.target_start0 < insertion_boundary0 < guide.target_end0
+    )
+    marker = f"[INSERT {len(payload_gene_oriented)} nt]" if insertion_splits_target else ""
+    inserted = payload_gene_oriented if insertion_splits_target else ""
+    edited_gene = left + inserted + right
+    if same_orientation:
+        guide.edited_target_region_5to3 = edited_gene
+        guide.edited_target_region_display = left + marker + right
+        guide.edited_target_deleted_bases = removed_gene
+    else:
+        guide.edited_target_region_5to3 = reverse_complement(edited_gene)
+        guide.edited_target_region_display = (
+            reverse_complement(right) + marker + reverse_complement(left)
+        )
+        guide.edited_target_deleted_bases = reverse_complement(removed_gene)
+    guide.edited_target_insert_length_nt = len(inserted)
+
+
+def _build_locus_contexts(
+    *,
+    external_five_sequence: str,
+    reference_uha: str,
+    final_uha: str,
+    removed_gene_sequence: str,
+    payload: str,
+    reference_dha: str,
+    final_dha: str,
+    external_three_sequence: str,
+    genotyping_primers: dict[str, object],
+) -> dict[str, object]:
+    """Build gene-oriented WT and edited linear loci with annotation coordinates."""
+    wt_offsets = {
+        "external_five": 0,
+        "uha": len(external_five_sequence),
+        "native": len(external_five_sequence) + len(reference_uha),
+        "dha": len(external_five_sequence) + len(reference_uha) + len(removed_gene_sequence),
+    }
+    wt_offsets["external_three"] = wt_offsets["dha"] + len(reference_dha)
+    wt_sequence = (
+        external_five_sequence
+        + reference_uha
+        + removed_gene_sequence
+        + reference_dha
+        + external_three_sequence
+    )
+    edited_offsets = {
+        "external_five": 0,
+        "uha": len(external_five_sequence),
+        "payload": len(external_five_sequence) + len(final_uha),
+    }
+    edited_offsets["dha"] = edited_offsets["payload"] + len(payload)
+    edited_offsets["external_three"] = edited_offsets["dha"] + len(final_dha)
+    edited_sequence = (
+        external_five_sequence
+        + final_uha
+        + payload
+        + final_dha
+        + external_three_sequence
+    )
+
+    def feature(label: str, start0: int, end0: int, *, feature_type: str = "misc_feature", strand: int = 1, note: str = "") -> dict[str, object]:
+        return {
+            "type": feature_type,
+            "label": label,
+            "start0": start0,
+            "end0": end0,
+            "strand": strand,
+            "note": note,
+        }
+
+    wt_features = [
+        feature("5-prime external genomic context", 0, len(external_five_sequence)),
+        feature("5-prime homology arm (UHA), reference", wt_offsets["uha"], wt_offsets["native"]),
+        feature("3-prime homology arm (DHA), reference", wt_offsets["dha"], wt_offsets["external_three"]),
+        feature("3-prime external genomic context", wt_offsets["external_three"], len(wt_sequence)),
+    ]
+    if removed_gene_sequence:
+        wt_features.append(
+            feature(
+                "native sequence at editing junction",
+                wt_offsets["native"],
+                wt_offsets["dha"],
+                note="Sequence removed or replaced in the edited allele",
+            )
+        )
+    edited_features = [
+        feature("5-prime external genomic context", 0, len(external_five_sequence)),
+        feature("5-prime homology arm (UHA), final", edited_offsets["uha"], edited_offsets["payload"]),
+        feature("inserted payload", edited_offsets["payload"], edited_offsets["dha"]),
+        feature("3-prime homology arm (DHA), final", edited_offsets["dha"], edited_offsets["external_three"]),
+        feature("3-prime external genomic context", edited_offsets["external_three"], len(edited_sequence)),
+    ]
+
+    source_offsets = {
+        "genomic_5prime_external": (wt_offsets["external_five"], edited_offsets["external_five"]),
+        "genomic_3prime_external": (wt_offsets["external_three"], edited_offsets["external_three"]),
+        "payload": (None, edited_offsets["payload"]),
+    }
+    for assay_name, assay in genotyping_primers.get("assays", {}).items():
+        if not isinstance(assay, dict) or assay.get("status") != "PASS":
+            continue
+        for role in ("forward_primer", "reverse_primer"):
+            primer = assay.get(role)
+            if not isinstance(primer, dict):
+                continue
+            source = str(primer.get("source", ""))
+            if source not in source_offsets:
+                continue
+            start_relative0 = int(primer["binding_start0"])
+            end_relative0 = int(primer["binding_end0"])
+            strand = 1 if primer.get("orientation") == "forward" else -1
+            label = f"{assay_name} {role.replace('_primer', '')} primer"
+            note = f"5'-{primer.get('sequence_5to3')}-3'; {source}"
+            wt_source_offset, edited_source_offset = source_offsets[source]
+            if wt_source_offset is not None:
+                wt_features.append(
+                    feature(
+                        label,
+                        wt_source_offset + start_relative0,
+                        wt_source_offset + end_relative0,
+                        feature_type="primer_bind",
+                        strand=strand,
+                        note=note,
+                    )
+                )
+            if edited_source_offset is not None:
+                edited_features.append(
+                    feature(
+                        label,
+                        edited_source_offset + start_relative0,
+                        edited_source_offset + end_relative0,
+                        feature_type="primer_bind",
+                        strand=strand,
+                        note=note,
+                    )
+                )
+    return {
+        "orientation": "gene-oriented 5-prime to 3-prime",
+        "external_flank_length_nt": len(external_five_sequence),
+        "wild_type": {
+            "sequence_5to3": wt_sequence,
+            "length_nt": len(wt_sequence),
+            "insertion_boundary0": wt_offsets["native"],
+            "features": sorted(wt_features, key=lambda item: (int(item["start0"]), int(item["end0"]))),
+        },
+        "edited": {
+            "sequence_5to3": edited_sequence,
+            "length_nt": len(edited_sequence),
+            "insertion_boundary0": edited_offsets["payload"],
+            "features": sorted(edited_features, key=lambda item: (int(item["start0"]), int(item["end0"]))),
+        },
+    }
+
+
 def _finalize_result(
     *,
     record: TranscriptRecord,
@@ -1015,6 +1226,10 @@ def _finalize_result(
     guides: list[GuideCandidate],
     provenance: list[str],
     backbone_definition: BackboneDefinition | None = None,
+    external_five_sequence: str = "",
+    external_five_interval0: tuple[int, int] | None = None,
+    external_three_sequence: str = "",
+    external_three_interval0: tuple[int, int] | None = None,
     extra_warnings: list[str] | None = None,
 ) -> DesignResult:
     is_c_terminal = terminus.upper().startswith("C")
@@ -1029,11 +1244,24 @@ def _finalize_result(
     donor_payload: dict[str, object] = payload_metadata_for(definition)
     cloning_fragments: dict[str, object] = {}
     primer_tails: dict[str, str] = {}
+    cloning_primers: dict[str, object] = {}
     edited_cds = ""
     fusion_protein = ""
     junctions: dict[str, str] = {}
+    genotyping_primers: dict[str, object] = {}
+    locus_contexts: dict[str, object] = {}
 
     guide_safe = bool(top and not top.blocking_mutation_required)
+    for guide in guides:
+        _populate_edited_guide_context(
+            guide,
+            gene_strand=record.strand,
+            insertion_boundary0=insertion_boundary0,
+            removed_start0=removed_start0,
+            removed_end0=removed_end0,
+            payload_gene_oriented=str(donor_payload["payload_sequence_5to3"]),
+            arms=(five_prime_arm, three_prime_arm),
+        )
     can_release = bool(top and guide_safe and final_sapi_count == 0)
     if can_release and top:
         cloning_fragments = synthesis_fragments_for_backbone(
@@ -1052,18 +1280,22 @@ def _finalize_result(
                 definition.dha_reverse_primer_tail_prefix
                 + reverse_complement(top.target_with_pam)
             ),
-            "note": (
-                "Append each tail to a separately designed locus-specific annealing sequence; "
-                "this prototype does not design PCR annealing regions."
-            ),
         }
-        payload_coding = str(donor_payload["payload_coding_sequence"])
-        edited_cds = (
-            edited_cds_without_stop + payload_coding
-            if is_c_terminal
-            else edited_cds_without_stop[:3] + payload_coding + edited_cds_without_stop[3:]
+        cloning_primers = design_homology_arm_cloning_primers(
+            five_prime_arm=five_prime_arm,
+            three_prime_arm=three_prime_arm,
+            tails=primer_tails,
         )
-        fusion_protein = translate(edited_cds)
+        payload_coding = str(donor_payload["payload_coding_sequence"])
+        if definition.fusion_compatible:
+            edited_cds = (
+                edited_cds_without_stop + payload_coding
+                if is_c_terminal
+                else edited_cds_without_stop[:3]
+                + payload_coding
+                + edited_cds_without_stop[3:]
+            )
+            fusion_protein = translate(edited_cds)
         payload_sequence = str(donor_payload["payload_sequence_5to3"])
         junctions = {
             "five_prime_junction_5to3": (
@@ -1078,6 +1310,44 @@ def _finalize_result(
                 + three_prime_arm.final_gene_oriented_sequence[:100]
             ),
         }
+        if (
+            external_five_sequence
+            and external_five_interval0 is not None
+            and external_three_sequence
+            and external_three_interval0 is not None
+        ):
+            genotyping_primers = design_genotyping_primers(
+                assembly=record.species.assembly,
+                chromosome=record.chromosome,
+                gene_strand=record.strand,
+                external_five_sequence=external_five_sequence,
+                external_five_interval0=external_five_interval0,
+                uha=five_prime_arm.final_gene_oriented_sequence,
+                wt_uha=five_prime_arm.gene_oriented_sequence,
+                removed_gene_sequence=removed_gene_sequence,
+                dha=three_prime_arm.final_gene_oriented_sequence,
+                wt_dha=three_prime_arm.gene_oriented_sequence,
+                external_three_sequence=external_three_sequence,
+                external_three_interval0=external_three_interval0,
+                payload=payload_sequence,
+                assembled_plasmid=str(cloning_fragments["assembled_plasmid_5to3"]),
+            )
+            locus_contexts = _build_locus_contexts(
+                external_five_sequence=external_five_sequence,
+                reference_uha=five_prime_arm.gene_oriented_sequence,
+                final_uha=five_prime_arm.final_gene_oriented_sequence,
+                removed_gene_sequence=removed_gene_sequence,
+                payload=payload_sequence,
+                reference_dha=three_prime_arm.gene_oriented_sequence,
+                final_dha=three_prime_arm.final_gene_oriented_sequence,
+                external_three_sequence=external_three_sequence,
+                genotyping_primers=genotyping_primers,
+            )
+            provenance.append(
+                "Genotyping primers were designed with Primer3 thermodynamics using "
+                "18-27-nt primers, 57-63 C Tm, 35-65% GC, structure filters, external "
+                "genomic primers outside both homology arms, and a 150-bp payload-junction standoff."
+            )
     backbone_info = cloning_fragments.get("uploaded_backbone", {})
     backbone_verified = bool(
         backbone_info
@@ -1206,21 +1476,75 @@ def _finalize_result(
                 ),
             },
             {
+                "check": "Custom payload interpretation",
+                "status": (
+                    "PASS"
+                    if definition.fusion_compatible
+                    else ("WARNING" if definition.is_custom else "PASS")
+                ),
+                "detail": (
+                    "Payload forms the expected continuous terminal fusion reading frame."
+                    if definition.fusion_compatible
+                    else definition.payload_warning
+                ),
+            },
+            {
                 "check": "Fusion translation",
-                "status": "PASS" if fusion_protein else "BLOCKED",
+                "status": (
+                    "PASS"
+                    if fusion_protein
+                    else ("N/A" if definition.is_custom else "BLOCKED")
+                ),
                 "detail": (
                     f"Predicted fusion is {len(fusion_protein)} aa; linker {donor_payload.get('linker_peptide', '')}; "
                     f"{donor_payload.get('tag_name', 'tag')} {donor_payload.get('tag_length_aa', '')} aa; linker-plus-tag payload "
                     f"{donor_payload.get('payload_peptide_length_aa', '')} aa."
                     if fusion_protein
-                    else "No final fusion translation released."
+                    else "No single fusion translation is asserted for this complex cassette."
+                ),
+            },
+            {
+                "check": "Genotyping primer design",
+                "status": (
+                    str(genotyping_primers.get("status", "N/A"))
+                    if genotyping_primers
+                    else "N/A"
+                ),
+                "detail": (
+                    f"{sum(assay.get('status') == 'PASS' for assay in genotyping_primers.get('assays', {}).values())}/3 assays have valid pairs; external genomic primers are outside the homology arms and absent from the assembled donor plasmid."
+                    if genotyping_primers
+                    else "Primer design was not run because no complete assembled donor was released."
+                ),
+            },
+            {
+                "check": "Homology-arm cloning primers",
+                "status": (
+                    str(cloning_primers.get("status", "N/A"))
+                    if cloning_primers
+                    else "N/A"
+                ),
+                "detail": (
+                    "Complete SapI/Golden Gate tails and genomic arm-end annealing regions are reported. "
+                    "Warnings identify endpoint-primer quality issues or internal donor mutations that endpoint PCR cannot encode."
+                    if cloning_primers
+                    else "Cloning primers were not generated because no complete donor design was released."
+                ),
+            },
+            {
+                "check": "WT and edited locus contexts",
+                "status": "PASS" if locus_contexts else "N/A",
+                "detail": (
+                    "Separate gene-oriented WT and edited records extend 300 bp beyond both homology arms and annotate arms, payload/native junction, and applicable genotyping-primer sites."
+                    if locus_contexts
+                    else "Locus contexts were not generated because complete external sequence context was unavailable."
                 ),
             },
         ]
     )
 
+    fusion_gate = bool(fusion_protein) if definition.fusion_compatible else True
     sequence_complete = bool(
-        can_release and fusion_protein and backbone_verified and plasmid_assembly_verified
+        can_release and fusion_gate and backbone_verified and plasmid_assembly_verified
     )
     status = (
         "SEQUENCE-COMPLETE COMPUTATIONAL DESIGN"
@@ -1228,13 +1552,19 @@ def _finalize_result(
         else "DESIGN BLOCKED - NO SEQUENCE-COMPLETE OUTPUT"
     )
     warnings = list(extra_warnings or [])
+    if definition.payload_warning:
+        warnings.append(definition.payload_warning)
+    if genotyping_primers:
+        warnings.extend(str(item) for item in genotyping_primers.get("warnings", []))
+    if cloning_primers:
+        warnings.extend(str(item) for item in cloning_primers.get("warnings", []))
     warnings.extend(
         [
             "No genome-wide off-target analysis is performed, as requested.",
             "Reference-genome sequence only; strain, cell-line, and clone-specific variants are not assessed.",
             "No experimental activity score is calculated. After the two primary Bollen priorities, ranking uses only GC/poly-T heuristics.",
             "Sequence-complete means the internal computational gates and uploaded-backbone assembly simulation passed; independently verify every sequence and plasmid junction before experimental use.",
-            "Custom backbone uploads are accepted only when all four SapI sites, the supported overhang order, the GGGGSAS linker, and the payload reading frame validate.",
+            "Custom backbone uploads require four SapI sites in a supported overhang order. Complex payloads may contain multiple ORFs or be out of frame; in that case no single fusion translation is asserted.",
         ]
     )
     return DesignResult(
@@ -1271,6 +1601,7 @@ def _finalize_result(
         donor_payload=donor_payload,
         cloning_fragments=cloning_fragments,
         primer_tail_templates=primer_tails,
+        cloning_primers=cloning_primers,
         edited_cds_sequence=edited_cds,
         fusion_protein_sequence=fusion_protein,
         fusion_protein_length_aa=len(fusion_protein),
@@ -1279,6 +1610,8 @@ def _finalize_result(
         warnings=warnings,
         provenance=provenance,
         custom_backbones_supported=True,
+        genotyping_primers=genotyping_primers,
+        locus_contexts=locus_contexts,
     )
 
 
@@ -1379,6 +1712,47 @@ def design_online(
         gene_strand=record.strand,
     )
 
+    if record.strand == 1:
+        external_five_interval0 = (
+            max(0, five_start0 - GENOTYPING_EXTERNAL_FLANK_NT),
+            five_start0,
+        )
+        external_three_interval0 = (
+            three_end0,
+            three_end0 + GENOTYPING_EXTERNAL_FLANK_NT,
+        )
+    else:
+        external_five_interval0 = (
+            five_end0,
+            five_end0 + GENOTYPING_EXTERNAL_FLANK_NT,
+        )
+        external_three_interval0 = (
+            max(0, three_start0 - GENOTYPING_EXTERNAL_FLANK_NT),
+            three_start0,
+        )
+    external_five_chromosome = client.region_sequence(
+        record.species,
+        record.chromosome,
+        external_five_interval0[0],
+        external_five_interval0[1],
+    )
+    external_three_chromosome = client.region_sequence(
+        record.species,
+        record.chromosome,
+        external_three_interval0[0],
+        external_three_interval0[1],
+    )
+    external_five_sequence = (
+        external_five_chromosome
+        if record.strand == 1
+        else reverse_complement(external_five_chromosome)
+    )
+    external_three_sequence = (
+        external_three_chromosome
+        if record.strand == 1
+        else reverse_complement(external_three_chromosome)
+    )
+
     current_cdna = list(record.cdna)
     mutation_warnings: list[str] = []
     five_arm, warnings = _domesticate_sapi_sites(
@@ -1451,10 +1825,18 @@ def design_online(
             f"Transcript selected: {record.display_transcript_id}.",
             "Guide/arm rules and SapI adapters follow Bollen et al. 2022 supplementary S1/S3.",
             f"{backbone_source} parsed and checked against the Bollen supplementary {selected_backbone.terminus} SapI overhang architecture.",
-            f"{payload_source} and verified by length, reading frame, and SHA-256 digest.",
+            (
+                f"{payload_source} and verified by length, fusion frame, and SHA-256 digest."
+                if selected_backbone.fusion_compatible
+                else f"{payload_source}, verified by length and SHA-256 digest, and retained as a complex cassette without a single-frame requirement."
+            ),
             "Coding SapI sites and selected-guide retargeting are evaluated with generic synonymous-codon search and full-CDS translation checks.",
         ],
         backbone_definition=selected_backbone,
+        external_five_sequence=external_five_sequence,
+        external_five_interval0=external_five_interval0,
+        external_three_sequence=external_three_sequence,
+        external_three_interval0=external_three_interval0,
         extra_warnings=mutation_warnings,
     )
 
@@ -1574,6 +1956,25 @@ def design_tubb5_fixture(
             "The uploaded Addgene #169227 SnapGene backbone was parsed for full circular in-silico Golden Gate assembly.",
             "The fixed GGGGSAS-mNeonGreen-stop payload was extracted from the backbone and verified against Bollen supplementary S2.",
         ],
+        external_five_sequence=cdna[
+            five_cdna_start0 - GENOTYPING_EXTERNAL_FLANK_NT:five_cdna_start0
+        ],
+        external_five_interval0=(
+            five_arm.genomic_end0,
+            five_arm.genomic_end0 + GENOTYPING_EXTERNAL_FLANK_NT,
+        ),
+        external_three_sequence=cdna[
+            TUBB5_INSERTION_CDNA0
+            + 3
+            + arm_length:TUBB5_INSERTION_CDNA0
+            + 3
+            + arm_length
+            + GENOTYPING_EXTERNAL_FLANK_NT
+        ],
+        external_three_interval0=(
+            three_arm.genomic_start0 - GENOTYPING_EXTERNAL_FLANK_NT,
+            three_arm.genomic_start0,
+        ),
         extra_warnings=[
             "Tubb5 has a functionally important C-terminal tail; a C-terminal fluorescent fusion may perturb tubulin interactions or post-translational modification. This test is computational only.",
             "The bundled transcript is ENSMUST00000001566.10, matching the current Ensembl canonical Tubb5-201 listing checked for this build. Live mode should still be rerun before experimental use.",

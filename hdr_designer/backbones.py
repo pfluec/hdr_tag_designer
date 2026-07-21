@@ -88,6 +88,9 @@ class BackboneDefinition:
     payload_supplies_stop: bool
     tag_name: str = "mNeonGreen"
     is_custom: bool = False
+    fusion_compatible: bool = True
+    payload_kind: str = "in-frame fusion"
+    payload_warning: str = ""
 
     @property
     def overhangs(self) -> dict[str, str]:
@@ -158,9 +161,9 @@ def backbone_for_terminus(terminus: str) -> BackboneDefinition:
 def infer_custom_backbone_definition(path: str | Path) -> BackboneDefinition:
     """Classify a circular .dna backbone from its four SapI overhangs.
 
-    Custom payloads must retain either the Bollen N- or C-terminal SapI/linker
+    Custom payloads must retain either the Bollen N- or C-terminal SapI overhang
     architecture. The sequence between the two inner cuts is extracted directly
-    from the uploaded file; no payload identity is assumed.
+    from the uploaded file; no payload identity or single-ORF structure is assumed.
     """
     document = read_snapgene(path)
     if document.topology != "circular":
@@ -194,26 +197,7 @@ def infer_custom_backbone_definition(path: str | Path) -> BackboneDefinition:
         )
     payload_core = document.sequence[cuts[1]:cuts[2]]
     payload = payload_core + template.overhangs["payload_to_dha"]
-    if len(payload) % 3:
-        raise ValueError(
-            f"Extracted custom payload is {len(payload)} nt and is not in frame"
-        )
-    if template.payload_supplies_stop:
-        linker_start0, linker_end0 = 0, 21
-        tag_start0, tag_end0 = 21, len(payload) - 3
-        payload_coding = payload[:-3]
-    else:
-        tag_start0, tag_end0 = 0, len(payload) - 21
-        linker_start0, linker_end0 = tag_end0, len(payload)
-        payload_coding = payload
-    if tag_end0 <= tag_start0:
-        raise ValueError("The extracted custom payload is too short for the Bollen linker architecture")
-    if translate(payload[linker_start0:linker_end0]) != "GGGGSAS":
-        raise ValueError(
-            "The custom payload does not retain the expected GGGGSAS junction linker"
-        )
-    if "*" in translate(payload_coding):
-        raise ValueError("The custom payload contains an internal in-frame stop codon")
+    payload_classification = _classify_custom_payload(payload, template)
 
     return BackboneDefinition(
         key=f"custom_{template.terminus.lower().replace('-', '_')}",
@@ -234,14 +218,81 @@ def infer_custom_backbone_definition(path: str | Path) -> BackboneDefinition:
         dha_reverse_primer_tail_prefix=template.dha_reverse_primer_tail_prefix,
         payload_length_nt=len(payload),
         payload_sha256=sha256(payload.encode("ascii")).hexdigest(),
-        tag_start0=tag_start0,
-        tag_end0=tag_end0,
-        linker_start0=linker_start0,
-        linker_end0=linker_end0,
+        tag_start0=int(payload_classification["tag_start0"]),
+        tag_end0=int(payload_classification["tag_end0"]),
+        linker_start0=int(payload_classification["linker_start0"]),
+        linker_end0=int(payload_classification["linker_end0"]),
         payload_supplies_stop=template.payload_supplies_stop,
         tag_name="custom tag",
         is_custom=True,
+        fusion_compatible=bool(payload_classification["fusion_compatible"]),
+        payload_kind=str(payload_classification["payload_kind"]),
+        payload_warning=str(payload_classification["payload_warning"]),
     )
+
+
+def _classify_custom_payload(
+    payload: str,
+    template: BackboneDefinition,
+) -> dict[str, int | bool | str]:
+    """Describe a custom payload without rejecting complex cassette structures."""
+    if template.payload_supplies_stop:
+        expected_linker_start0, expected_linker_end0 = 0, 21
+        payload_coding = payload[:-3]
+    else:
+        expected_linker_end0 = len(payload)
+        expected_linker_start0 = max(0, expected_linker_end0 - 21)
+        payload_coding = payload
+    linker_matches = (
+        expected_linker_end0 - expected_linker_start0 == 21
+        and translate(payload[expected_linker_start0:expected_linker_end0]) == "GGGGSAS"
+    )
+    frame_divisible = len(payload_coding) % 3 == 0
+    translated = translate(payload_coding) if frame_divisible else ""
+    unambiguous = "X" not in translated
+    no_internal_stop = "*" not in translated
+    fusion_compatible = bool(
+        linker_matches and frame_divisible and unambiguous and no_internal_stop
+    )
+    if fusion_compatible and template.payload_supplies_stop:
+        linker_start0, linker_end0 = 0, 21
+        tag_start0, tag_end0 = 21, len(payload) - 3
+    elif fusion_compatible:
+        tag_start0, tag_end0 = 0, len(payload) - 21
+        linker_start0, linker_end0 = tag_end0, len(payload)
+    else:
+        linker_start0 = linker_end0 = 0
+        tag_start0 = 0
+        tag_end0 = len(payload_coding)
+
+    issues: list[str] = []
+    if not linker_matches:
+        issues.append("the architecture-specific GGGGSAS fusion linker was not detected")
+    if not frame_divisible:
+        issues.append(
+            f"the payload coding span is {len(payload_coding)} nt and is not divisible by three"
+        )
+    if frame_divisible and not unambiguous:
+        issues.append("the payload translation contains ambiguous codons")
+    if frame_divisible and not no_internal_stop:
+        issues.append("the payload contains one or more in-frame stop codons")
+    payload_warning = (
+        "Custom payload is retained as a multi-ORF/non-coding or non-frame cassette; "
+        + "; ".join(issues)
+        + ". No single fusion-protein translation is asserted."
+        if issues
+        else ""
+    )
+
+    return {
+        "tag_start0": tag_start0,
+        "tag_end0": tag_end0,
+        "linker_start0": linker_start0,
+        "linker_end0": linker_end0,
+        "fusion_compatible": fusion_compatible,
+        "payload_kind": "in-frame fusion" if fusion_compatible else "complex cassette",
+        "payload_warning": payload_warning,
+    }
 
 
 @dataclass(frozen=True)
@@ -480,7 +531,9 @@ def backbone_metadata_for(definition: BackboneDefinition) -> dict[str, Any]:
         "payload_core_length_nt": len(analysis.payload_core_sequence),
         "payload_length_nt": len(analysis.payload_sequence),
         "payload_stop_overhang_5to3": overhangs["payload_to_dha"],
-        "payload_matches_bollen_s2": analysis.payload_matches_supplement,
+        "payload_matches_bollen_s2": (
+            analysis.payload_matches_supplement and not definition.is_custom
+        ),
         "payload_sequence_verified": analysis.payload_matches_supplement,
         "expected_sapi_overhangs": overhangs,
     }
@@ -500,10 +553,19 @@ def payload_metadata_for(
     tag_coding = payload[definition.tag_start0:definition.tag_end0]
     payload_coding = payload[:-3] if definition.payload_supplies_stop else payload
     architecture = (
-        f"GGGGSAS linker + {definition.tag_name} + stop"
-        if definition.payload_supplies_stop
-        else f"{definition.tag_name} + GGGGSAS linker"
+        (
+            f"GGGGSAS linker + {definition.tag_name} + stop"
+            if definition.payload_supplies_stop
+            else f"{definition.tag_name} + GGGGSAS linker"
+        )
+        if definition.fusion_compatible
+        else f"Custom {definition.terminus} complex cassette"
     )
+    linker_peptide = translate(linker_coding) if linker_coding else ""
+    tag_in_frame = definition.fusion_compatible and len(tag_coding) % 3 == 0
+    payload_in_frame = definition.fusion_compatible and len(payload_coding) % 3 == 0
+    tag_peptide = translate(tag_coding) if tag_in_frame else ""
+    payload_peptide = translate(payload_coding) if payload_in_frame else ""
     return {
         "name": architecture,
         "backbone_name": definition.name,
@@ -512,22 +574,37 @@ def payload_metadata_for(
         "payload_sequence_5to3": payload,
         "payload_length_nt": len(payload),
         "linker_coding_sequence": linker_coding,
-        "linker_peptide": translate(linker_coding),
+        "linker_peptide": linker_peptide,
         "tag_coding_sequence": tag_coding,
         "tag_name": definition.tag_name,
         "tag_length_nt": len(tag_coding),
-        "tag_peptide": translate(tag_coding),
-        "tag_length_aa": len(translate(tag_coding)),
+        "tag_peptide": tag_peptide,
+        "tag_length_aa": len(tag_peptide),
         "payload_coding_sequence": payload_coding,
         "payload_coding_length_nt": len(payload_coding),
-        "payload_peptide": translate(payload_coding),
-        "payload_peptide_length_aa": len(translate(payload_coding)),
-        "stop_codon": payload[-3:] if definition.payload_supplies_stop else "",
+        "payload_peptide": payload_peptide,
+        "payload_peptide_length_aa": len(payload_peptide),
+        "fusion_compatible": definition.fusion_compatible,
+        "payload_kind": definition.payload_kind,
+        "payload_warning": definition.payload_warning,
+        "stop_codon": (
+            payload[-3:]
+            if definition.payload_supplies_stop and definition.fusion_compatible
+            else ""
+        ),
+        "payload_to_dha_overhang": definition.overhangs["payload_to_dha"],
         "source": (
             f"Extracted from {definition.dna_path.name} and verified against its expected "
-            "length, SapI architecture, reading frame, and SHA-256 digest"
+            "length, SapI architecture, and SHA-256 digest"
+            + (
+                "; the conventional fusion frame was also verified"
+                if definition.fusion_compatible
+                else "; retained as a complex cassette without a single-frame requirement"
+            )
         ),
-        "matches_bollen_s2": analysis.payload_matches_supplement,
+        "matches_bollen_s2": (
+            analysis.payload_matches_supplement and not definition.is_custom
+        ),
         "sequence_verified": analysis.payload_matches_supplement,
     }
 
@@ -665,7 +742,20 @@ def assemble_backbone_plasmid(
         definition=definition,
         replacement_length=len(assembled_replacement),
     )
-    if definition.payload_supplies_stop:
+    if not definition.fusion_compatible:
+        payload_features = [
+            {
+                "type": "misc_feature",
+                "label": "custom payload cassette",
+                "start0": payload_start0,
+                "end0": payload_end0,
+                "strand": 1,
+                "note": definition.payload_warning,
+            }
+        ]
+        donor_architecture = "target-UHA-custom-payload-cassette-DHA-target"
+        dha_note = "Gene-oriented final arm after custom payload cassette"
+    elif definition.payload_supplies_stop:
         payload_features = [
             {
                 "type": "misc_feature",

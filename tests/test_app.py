@@ -20,6 +20,7 @@ class StreamlitAppTest(unittest.TestCase):
             [
                 "SEQUENCE-COMPLETE COMPUTATIONAL DESIGN",
                 "All 1 internal SapI site(s) were removed from the final arm sequences.",
+                "All three genotyping assays have a primer pair.",
             ],
         )
         metrics = {metric.label: metric.value for metric in app.metric}
@@ -30,7 +31,17 @@ class StreamlitAppTest(unittest.TestCase):
         self.assertEqual(metrics["Arm SapI sites found"], "1")
         self.assertEqual(metrics["Arm SapI sites resolved"], "1")
         self.assertEqual(metrics["Arm SapI sites remaining"], "0")
-        self.assertEqual(len(app.get("download_button")), 5)
+        self.assertEqual(len(app.get("download_button")), 8)
+
+        # A normal Streamlit rerun (including older download behavior) must
+        # restore the completed result from session state instead of resetting.
+        app.run()
+        self.assertEqual(len(app.exception), 0)
+        self.assertIn(
+            "SEQUENCE-COMPLETE COMPUTATIONAL DESIGN",
+            [message.value for message in app.success],
+        )
+        self.assertEqual(len(app.get("download_button")), 8)
 
     def test_n_terminal_selection_uses_169226_and_disables_fixture(self) -> None:
         app_path = Path(__file__).resolve().parents[1] / "app.py"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from io import StringIO
+from dataclasses import replace
 import json
 import unittest
 
@@ -17,6 +18,7 @@ from hdr_designer.backbones import (
     infer_custom_backbone_definition,
     n_terminal_backbone_analysis,
     NTERM_BACKBONE,
+    _classify_custom_payload,
 )
 from hdr_designer.design import _automatic_noncoding_sapi_mutation, design_online
 from hdr_designer.ensembl import SPECIES
@@ -350,6 +352,69 @@ class OnlineDesignPathTest(unittest.TestCase):
         )
         self.assertTrue(c_result.sequence_complete)
         self.assertEqual(c_result.cloning_fragments["assembled_plasmid_length_nt"], 3950)
+
+    def test_complex_custom_payload_is_warned_not_blocked(self) -> None:
+        multi_orf = "ATGAAATAAATGCCCTAA"
+        classification = _classify_custom_payload(multi_orf, NTERM_BACKBONE)
+        self.assertFalse(classification["fusion_compatible"])
+        self.assertEqual(classification["payload_kind"], "complex cassette")
+        self.assertIn("in-frame stop codons", classification["payload_warning"])
+
+        non_frame = _classify_custom_payload("ATGAAATAAATGCCCC", NTERM_BACKBONE)
+        self.assertFalse(non_frame["fusion_compatible"])
+        self.assertIn("not divisible by three", non_frame["payload_warning"])
+
+        custom = infer_custom_backbone_definition(NTERM_BACKBONE_DNA)
+        cassette_definition = replace(
+            custom,
+            fusion_compatible=False,
+            payload_kind="complex cassette",
+            payload_warning=(
+                "Custom payload is retained as a multi-ORF/non-coding or non-frame cassette; "
+                "test fixture. No single fusion-protein translation is asserted."
+            ),
+            linker_start0=0,
+            linker_end0=0,
+            tag_start0=0,
+            tag_end0=custom.payload_length_nt,
+        )
+        result = design_online(
+            species_key="human",
+            gene="MockTagGene",
+            terminus="N-terminal",
+            client=SyntheticEnsemblClient("human"),
+            backbone_definition=cassette_definition,
+        )
+        self.assertTrue(result.sequence_complete)
+        self.assertEqual(result.edited_cds_sequence, "")
+        self.assertEqual(result.fusion_protein_sequence, "")
+        self.assertEqual(result.donor_payload["payload_kind"], "complex cassette")
+        self.assertIn("No single fusion-protein", " ".join(result.warnings))
+        self.assertIn(
+            "custom payload cassette",
+            {
+                feature["label"]
+                for feature in result.cloning_fragments["assembled_plasmid_features"]
+            },
+        )
+
+    def test_guide_context_handles_n_terminal_plus_and_minus_strands(self) -> None:
+        for strand in (1, -1):
+            with self.subTest(strand=strand):
+                result = design_online(
+                    species_key="mouse",
+                    gene="MockTagGene",
+                    terminus="N-terminal",
+                    client=SyntheticEnsemblClient("mouse", strand=strand),
+                )
+                guide = result.top_guide
+                self.assertEqual(
+                    guide.final_target_with_pam_after_point_mutations,
+                    guide.target_with_pam,
+                )
+                self.assertIn("[INSERT 726 nt]", guide.edited_target_region_display)
+                self.assertEqual(guide.edited_target_insert_length_nt, 726)
+                self.assertEqual(len(guide.edited_target_region_5to3), 23 + 726)
 
     def test_synonymous_pam_blocking_mutation_is_applied(self) -> None:
         result = design_online(

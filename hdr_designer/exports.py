@@ -33,6 +33,9 @@ def guides_csv(result: DesignResult) -> str:
         "pam_destroyed",
         "final_pam",
         "final_pam_destroyed",
+        "final_target_after_point_mutations_5to3",
+        "edited_target_region_display_5to3",
+        "edited_target_region_full_5to3",
         "initial_longest_retained_segment_nt",
         "final_longest_retained_segment_nt",
         "blocking_mutation_required_after_final_design",
@@ -59,6 +62,9 @@ def guides_csv(result: DesignResult) -> str:
                 "pam_destroyed": guide.pam_destroyed,
                 "final_pam": guide.final_pam,
                 "final_pam_destroyed": guide.final_pam_destroyed,
+                "final_target_after_point_mutations_5to3": guide.final_target_with_pam_after_point_mutations,
+                "edited_target_region_display_5to3": guide.edited_target_region_display,
+                "edited_target_region_full_5to3": guide.edited_target_region_5to3,
                 "initial_longest_retained_segment_nt": guide.longest_retained_segment,
                 "final_longest_retained_segment_nt": guide.final_longest_retained_segment,
                 "blocking_mutation_required_after_final_design": guide.blocking_mutation_required,
@@ -66,6 +72,91 @@ def guides_csv(result: DesignResult) -> str:
                 "rationale": guide.rationale,
             }
         )
+    return output.getvalue()
+
+
+def genotyping_primers_csv(result: DesignResult) -> str:
+    """Return one row per primer, with assay-level expected product metadata."""
+    output = io.StringIO()
+    fields = [
+        "assay",
+        "assay_status",
+        "primer_role",
+        "primer_name",
+        "sequence_5to3",
+        "orientation",
+        "reference_sequence_strand",
+        "source",
+        "reusable_payload_primer",
+        "outside_homology_arm",
+        "genomic_interval_1based",
+        "payload_interval_1based",
+        "distance_from_5prime_junction_nt",
+        "distance_from_3prime_junction_nt",
+        "length_nt",
+        "tm_c",
+        "gc_percent",
+        "hairpin_tm_c",
+        "homodimer_tm_c",
+        "pair_heterodimer_tm_c",
+        "pair_tm_difference_c",
+        "expected_product_size_bp",
+        "expected_wild_type_product_size_bp",
+        "expected_edited_product_size_bp",
+        "expected_amplicon_sequence_5to3",
+        "expected_wild_type_amplicon_sequence_5to3",
+        "expected_edited_amplicon_sequence_5to3",
+        "reason",
+    ]
+    writer = csv.DictWriter(output, fieldnames=fields, lineterminator="\n")
+    writer.writeheader()
+    for assay_name, assay in result.genotyping_primers.get("assays", {}).items():
+        primer_written = False
+        for role in ("forward_primer", "reverse_primer"):
+            primer = assay.get(role)
+            if not primer:
+                continue
+            primer_written = True
+            writer.writerow(
+                {
+                    "assay": assay_name,
+                    "assay_status": assay.get("status", ""),
+                    "primer_role": role.replace("_primer", ""),
+                    "primer_name": primer.get("name", ""),
+                    "sequence_5to3": primer.get("sequence_5to3", ""),
+                    "orientation": primer.get("orientation", ""),
+                    "reference_sequence_strand": primer.get("reference_sequence_strand", ""),
+                    "source": primer.get("source", ""),
+                    "reusable_payload_primer": primer.get("source") == "payload",
+                    "outside_homology_arm": primer.get("outside_homology_arm", False),
+                    "genomic_interval_1based": primer.get("genomic_interval_1based", ""),
+                    "payload_interval_1based": primer.get("payload_interval_1based", ""),
+                    "distance_from_5prime_junction_nt": primer.get("distance_from_5prime_junction_nt", ""),
+                    "distance_from_3prime_junction_nt": primer.get("distance_from_3prime_junction_nt", ""),
+                    "length_nt": primer.get("length_nt", ""),
+                    "tm_c": primer.get("tm_c", ""),
+                    "gc_percent": primer.get("gc_percent", ""),
+                    "hairpin_tm_c": primer.get("hairpin_tm_c", ""),
+                    "homodimer_tm_c": primer.get("homodimer_tm_c", ""),
+                    "pair_heterodimer_tm_c": assay.get("heterodimer_tm_c", ""),
+                    "pair_tm_difference_c": assay.get("tm_difference_c", ""),
+                    "expected_product_size_bp": assay.get("product_size_bp", ""),
+                    "expected_wild_type_product_size_bp": assay.get("expected_wild_type_product_size_bp", ""),
+                    "expected_edited_product_size_bp": assay.get("expected_edited_product_size_bp", ""),
+                    "expected_amplicon_sequence_5to3": assay.get("amplicon_sequence_5to3", ""),
+                    "expected_wild_type_amplicon_sequence_5to3": assay.get("expected_wild_type_amplicon_sequence_5to3", ""),
+                    "expected_edited_amplicon_sequence_5to3": assay.get("expected_edited_amplicon_sequence_5to3", ""),
+                    "reason": assay.get("reason", ""),
+                }
+            )
+        if not primer_written:
+            writer.writerow(
+                {
+                    "assay": assay_name,
+                    "assay_status": assay.get("status", ""),
+                    "reason": assay.get("reason", ""),
+                }
+            )
     return output.getvalue()
 
 
@@ -124,7 +215,96 @@ def arms_fasta(result: DesignResult) -> str:
         )
     if result.edited_cds_sequence:
         records.append(fasta_record(f"{result.gene_symbol}_predicted_fusion_CDS_without_terminal_stop", result.edited_cds_sequence))
+    for assay_name, assay in result.genotyping_primers.get("assays", {}).items():
+        amplicon = assay.get("amplicon_sequence_5to3")
+        if amplicon:
+            records.append(
+                fasta_record(
+                    f"{result.gene_symbol}_{assay_name}_expected_amplicon",
+                    str(amplicon),
+                )
+            )
+        if assay_name == "wild_type_locus":
+            edited_amplicon = assay.get("expected_edited_amplicon_sequence_5to3")
+            if edited_amplicon:
+                records.append(
+                    fasta_record(
+                        f"{result.gene_symbol}_wild_type_locus_expected_edited_amplicon",
+                        str(edited_amplicon),
+                    )
+                )
+    for context_name, context in result.locus_contexts.items():
+        if not isinstance(context, dict) or not context.get("sequence_5to3"):
+            continue
+        records.append(
+            fasta_record(
+                f"{result.gene_symbol}_{context_name}_locus_with_300bp_external_flanks_gene_oriented",
+                str(context["sequence_5to3"]),
+            )
+        )
     return "".join(records)
+
+
+def locus_context_genbank(result: DesignResult, context_name: str) -> str:
+    """Return one annotated linear WT or edited locus context as GenBank."""
+    context = result.locus_contexts.get(context_name)
+    if not isinstance(context, dict) or not context.get("sequence_5to3"):
+        raise ValueError(f"No {context_name} locus context is available")
+    sequence = str(context["sequence_5to3"])
+    suffix = "WT" if context_name == "wild_type" else "EDITED"
+    record = SeqRecord(
+        Seq(sequence),
+        id=f"{result.gene_symbol}_{suffix}_locus",
+        name=f"{result.gene_symbol}_{suffix}"[:16],
+        description=(
+            f"{result.gene_symbol} {suffix.lower()} gene-oriented locus context with "
+            "300-bp sequence beyond each homology arm"
+        ),
+    )
+    record.annotations.update(
+        {
+            "molecule_type": "DNA",
+            "topology": "linear",
+            "data_file_division": "SYN",
+            "date": datetime.now(timezone.utc).strftime("%d-%b-%Y").upper(),
+            "source": f"{result.species_label} reference and computational donor design",
+            "organism": result.species_label,
+            "comment": (
+                f"Gene-oriented 5-prime to 3-prime context on {result.assembly}. "
+                "Primer annotations are computational candidates; confirm genome-wide "
+                "specificity before ordering."
+            ),
+        }
+    )
+    record.features.append(
+        SeqFeature(
+            FeatureLocation(0, len(sequence), strand=1),
+            type="source",
+            qualifiers={"label": [f"{suffix.lower()} locus context"]},
+        )
+    )
+    for item in context.get("features", []):
+        start0 = int(item["start0"])
+        end0 = int(item["end0"])
+        if not 0 <= start0 < end0 <= len(sequence):
+            raise ValueError(
+                f"Invalid {context_name} locus feature coordinates: "
+                f"{item.get('label')} {start0}:{end0}"
+            )
+        qualifiers = {"label": [str(item.get("label", item.get("type", "feature")))]}
+        if item.get("note"):
+            qualifiers["note"] = [str(item["note"])]
+        record.features.append(
+            SeqFeature(
+                FeatureLocation(start0, end0, strand=int(item.get("strand", 1))),
+                type=str(item.get("type", "misc_feature")),
+                qualifiers=qualifiers,
+            )
+        )
+    record.features.sort(key=lambda item: (int(item.location.start), int(item.location.end)))
+    handle = io.StringIO()
+    SeqIO.write(record, handle, "genbank")
+    return handle.getvalue()
 
 
 def assembled_plasmid_genbank(result: DesignResult) -> str:
@@ -398,6 +578,10 @@ def _guide_report(guide: GuideCandidate) -> list[str]:
         f"  Intended edit disrupts PAM: {'yes' if guide.pam_destroyed else 'no'}",
         f"  Final donor PAM: {guide.final_pam or guide.pam}",
         f"  Final donor disrupts PAM: {'yes' if guide.final_pam_destroyed else 'no'}",
+        f"  Reference guide-binding region + PAM (5'->3'): {guide.target_with_pam}",
+        f"  Final target after donor point mutations (5'->3'): {guide.final_target_with_pam_after_point_mutations or '(not reconstructed)'}",
+        f"  Actual edited target region (compact, 5'->3'): {guide.edited_target_region_display or '(not reconstructed)'}",
+        f"  Deleted target-region bases: {guide.edited_target_deleted_bases or '(none)'}",
         f"  Longest original segment after the intended edit: {guide.longest_retained_segment} nt",
         f"  Longest original segment after any donor-protection edits: {guide.final_longest_retained_segment} nt",
         f"  Blocking mutation note: {guide.blocking_mutation_note or '(none)'}",
@@ -545,6 +729,8 @@ def design_report(result: DesignResult) -> str:
         lines.extend(
             [
                 f"Name: {result.donor_payload.get('name')}",
+                f"Interpretation: {result.donor_payload.get('payload_kind')}",
+                f"Interpretation warning: {result.donor_payload.get('payload_warning') or '(none)'}",
                 f"Payload length: {result.donor_payload.get('payload_length_nt')} nt",
                 f"Linker: {result.donor_payload.get('linker_coding_sequence')} / {result.donor_payload.get('linker_peptide')}",
                 f"{result.donor_payload.get('tag_name', 'Tag')} coding region: "
@@ -609,10 +795,111 @@ def design_report(result: DesignResult) -> str:
                     f"observed {details.get('observed')}; window {details.get('window_5to3')}"
                 )
 
-    if result.primer_tail_templates:
-        lines.extend(["", "PCR PRIMER 5' TAIL TEMPLATES", "-" * 58])
-        for key, value in result.primer_tail_templates.items():
-            lines.append(f"{key}: {value}")
+    if result.cloning_primers:
+        lines.extend(["", "HOMOLOGY-ARM CLONING PRIMERS (SAPI / GOLDEN GATE)", "-" * 58])
+        lines.append(f"Status: {result.cloning_primers.get('status')}")
+        lines.append(f"Rule set: {result.cloning_primers.get('ruleset')}")
+        for primer in result.cloning_primers.get("primers", {}).values():
+            lines.extend(
+                [
+                    f"{primer.get('name')}:",
+                    f"  5' tail: {primer.get('tail_sequence_5to3')}",
+                    f"  Genomic annealing region: {primer.get('annealing_sequence_5to3')}",
+                    f"  Complete primer (5'->3'): {primer.get('full_sequence_5to3')}",
+                    f"  Annealing length/Tm/GC: {primer.get('annealing_length_nt')} nt / "
+                    f"{primer.get('annealing_tm_c')} C / {primer.get('annealing_gc_percent')}%",
+                    f"  Arm binding interval: {primer.get('arm_binding_interval_1based')}",
+                ]
+            )
+        for warning in result.cloning_primers.get("warnings", []):
+            lines.append(f"Warning: {warning}")
+
+    if result.genotyping_primers:
+        lines.extend(["", "GENOTYPING PCR ASSAYS", "-" * 58])
+        lines.append(f"Overall status: {result.genotyping_primers.get('status')}")
+        lines.append(f"Rule set: {result.genotyping_primers.get('ruleset')}")
+        lines.append(
+            "Reference: "
+            f"{result.genotyping_primers.get('assembly')} chr"
+            f"{result.genotyping_primers.get('chromosome')}"
+        )
+        lines.append(
+            "Minimum payload-primer distance from the tested junction: "
+            f"{result.genotyping_primers.get('payload_junction_standoff_nt')} bp"
+        )
+        for assay_name, assay in result.genotyping_primers.get("assays", {}).items():
+            lines.append(f"{assay_name}: {assay.get('status')}")
+            if assay.get("reason"):
+                lines.append(f"  Reason: {assay.get('reason')}")
+                continue
+            lines.append(f"  Expected product: {assay.get('product_size_bp')} bp")
+            if assay.get("expected_wild_type_product_size_bp"):
+                lines.append(
+                    "  Expected WT / edited products: "
+                    f"{assay.get('expected_wild_type_product_size_bp')} / "
+                    f"{assay.get('expected_edited_product_size_bp')} bp"
+                )
+            for role in ("forward_primer", "reverse_primer"):
+                primer = assay.get(role, {})
+                if not primer:
+                    continue
+                location = primer.get("genomic_interval_1based") or primer.get("payload_interval_1based")
+                lines.append(
+                    f"  {role}: 5'-{primer.get('sequence_5to3')}-3'; "
+                    f"{primer.get('length_nt')} nt; Tm {primer.get('tm_c')} C; "
+                    f"GC {primer.get('gc_percent')}%; {primer.get('source')}; "
+                    f"location {location}"
+                )
+                if primer.get("source") == "payload":
+                    lines.append(
+                        "    Payload distances from 5'/3' junctions: "
+                        f"{primer.get('distance_from_5prime_junction_nt')} / "
+                        f"{primer.get('distance_from_3prime_junction_nt')} bp"
+                    )
+            for allele, behavior in assay.get("allele_behavior", {}).items():
+                lines.append(f"  {allele}: {behavior}")
+            if assay.get("expected_wild_type_amplicon_sequence_5to3"):
+                lines.append("  Expected WT amplicon sequence (5'->3'):")
+                lines.append(
+                    _indent(
+                        wrap_sequence(
+                            str(assay["expected_wild_type_amplicon_sequence_5to3"])
+                        )
+                    )
+                )
+                lines.append("  Expected edited amplicon sequence (5'->3'):")
+                lines.append(
+                    _indent(
+                        wrap_sequence(
+                            str(assay["expected_edited_amplicon_sequence_5to3"])
+                        )
+                    )
+                )
+            else:
+                lines.append("  Expected amplicon sequence (5'->3'):")
+                lines.append(
+                    _indent(wrap_sequence(str(assay.get("amplicon_sequence_5to3", ""))))
+                )
+        for warning in result.genotyping_primers.get("warnings", []):
+            lines.append(f"Warning: {warning}")
+
+    if result.locus_contexts:
+        lines.extend(["", "WT AND EDITED LOCUS CONTEXTS", "-" * 58])
+        lines.append(
+            "Orientation: gene-oriented 5'->3'; both records extend 300 bp beyond each homology arm."
+        )
+        for context_name in ("wild_type", "edited"):
+            context = result.locus_contexts.get(context_name, {})
+            lines.append(f"{context_name} locus ({context.get('length_nt')} bp):")
+            lines.append("  Annotations:")
+            for item in context.get("features", []):
+                strand = "+" if item.get("strand", 1) == 1 else "-"
+                lines.append(
+                    f"    - {item.get('label')}: {int(item.get('start0', 0)) + 1}-"
+                    f"{item.get('end0')} ({strand}); {item.get('type')}"
+                )
+            lines.append("  Sequence (5'->3'):")
+            lines.append(_indent(wrap_sequence(str(context.get("sequence_5to3", "")))))
 
     if result.fusion_protein_sequence:
         lines.extend(["", "PREDICTED FUSION", "-" * 58])

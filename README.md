@@ -2,16 +2,16 @@
 
 A local Streamlit prototype for Bollen-style **in-trans paired nicking (ITPN)** gene tagging with **SpCas9 D10A**. The first input is species: mouse **GRCm39** or human **GRCh38**.
 
-Version 0.5.1 supports both finalized Bollen donor architectures:
+Version 0.6.0 supports both finalized Bollen donor architectures:
 
 - N-terminal `mNeonGreen-GGGGSAS` using Addgene **#169226**
 - C-terminal `GGGGSAS-mNeonGreen-stop` using Addgene **#169227**
-- uploaded custom SnapGene backbones that retain one of those two four-SapI/linker architectures
+- uploaded custom SnapGene backbones that retain one of those two four-SapI architectures, including multi-ORF and non-frame payload cassettes
 - 600-bp arms by default
 - no off-target analysis
 - reference sequence only
 
-Custom files are accepted only after exact structural checks; arbitrary adapters, linkers, enzymes, and payload-only FASTA uploads remain deferred.
+Custom files are accepted only after exact SapI structural checks. Complex cassettes are assembled without asserting a single fusion translation, and non-frame payloads receive an explicit warning. Arbitrary adapters, enzymes, and payload-only FASTA uploads remain deferred.
 
 ## What it does
 
@@ -21,14 +21,17 @@ Custom files are accepted only after exact structural checks; arbitrary adapters
 4. Ranks guides by the Bollen priorities available locally: distance first, target disruption second, then basic GC/poly-T properties. A nearer guide is not demoted merely because it needs a synonymous blocking mutation.
 5. Generates gene-oriented homology arms, detects every internal SapI site, and automatically removes it using either a verified synonymous coding change or a guarded single-base non-coding change. Non-coding candidates exclude coding bases, the first/last three bases of every exon, and six intronic bases on either side of each splice boundary; they must not create another SapI site or a longer problematic homopolymer. The automatic ranking prefers a base outside the mature transcript, lower local homopolymer burden, a central motif position, then a transition.
 6. Re-evaluates the selected target after all donor edits. If needed, it searches synonymous changes that destroy the PAM first, then PAM-proximal seed changes that satisfy the 14-nt retained-segment cutoff. Every released change must preserve the complete CDS translation and avoid new SapI sites.
-7. Generates the exact Bollen supplementary N- or C-terminal UHA/DHA synthesis fragments and PCR-primer tail templates.
+7. Generates the exact Bollen supplementary N- or C-terminal UHA/DHA fragments and complete homology-arm cloning primers, combining the fixed SapI/Golden Gate tails with Primer3-evaluated genomic annealing regions.
 8. Parses Addgene #169226 or #169227, verifies all four SapI sites, and reconstructs the payload between the inner cuts. N-terminal order is `TAC -> GTG -> AGC -> AAT`; C-terminal order is `TAC -> GGC -> TGA -> AAT`.
 9. Reconstructs the full circular Golden Gate product and verifies all four ligation junctions and the absence of residual SapI sites.
-10. Exports TXT, CSV, FASTA, JSON, and an annotated GenBank file that can be opened in SnapGene and similar sequence editors.
-11. Presents a SapI quality-control panel with total and per-arm counts plus a site-by-site record of coordinates, resolution status, nucleotide/codon changes, protein consequence, and selection reason.
-12. Optionally classifies an uploaded circular SnapGene backbone as N- or C-terminal from its SapI overhang order, validates its GGGGSAS linker and reading frame, then runs the same complete assembly and export path.
+10. Shows the reference guide target/PAM, the target after automatic point mutations, and the actual donor-allele sequence across the edited region, including an insertion marker and the full inserted context.
+11. Designs WT-locus, 5-prime junction, and 3-prime junction genotyping PCR assays with Primer3 thermodynamics. Junction genomic primers bind outside the homology arms, payload primers bind at least 150 bp from the tested junction, and external primers are checked against the assembled donor plasmid.
+12. Exports TXT, guide CSV, genotyping-primer CSV, FASTA, JSON, and an annotated GenBank file that can be opened in SnapGene and similar sequence editors.
+13. Presents a SapI quality-control panel with total and per-arm counts plus a site-by-site record of coordinates, resolution status, nucleotide/codon changes, protein consequence, and selection reason.
+14. Optionally classifies an uploaded circular SnapGene backbone as N- or C-terminal from its SapI overhang order, then runs the same complete assembly and export path. A conventional GGGGSAS single-ORF payload receives a fusion prediction; other payload organizations are retained as complex cassettes with a warning.
+15. Builds separate annotated linear WT and edited locus records, each extending 300 bp beyond both homology arms. The records annotate reference/final arms, payload or native junction sequence, and applicable genotyping-primer binding sites and are downloadable as GenBank.
 
-The prototype does **not** calculate a validated on-target activity score, perform off-target searches, inspect sample-specific variants, or design locus-specific PCR annealing regions. Non-coding guide-blocking changes remain withheld, while non-coding SapI sites are now domesticated automatically when an eligible one-base solution passes the sequence gates. Sites confined to coding bases without a synonymous solution, protected splice-edge bases, or otherwise unsafe candidates remain blocked.
+The prototype does **not** calculate a validated on-target activity score, perform off-target searches, inspect sample-specific variants, or perform a genome-wide primer-uniqueness search. Genotyping primers are checked against the donor plasmid, but must still be confirmed with Primer-BLAST before ordering. Non-coding guide-blocking changes remain withheld, while non-coding SapI sites are now domesticated automatically when an eligible one-base solution passes the sequence gates. Sites confined to coding bases without a synonymous solution, protected splice-edge bases, or otherwise unsafe candidates remain blocked.
 
 There is not yet an interactive mutation editor. Accordingly, cases the automatic engine cannot resolve are labeled `DESIGN BLOCKED - NO SEQUENCE-COMPLETE OUTPUT` rather than suggesting that an in-app review action is available. A future mutation-choice interface can expose alternative eligible SapI substitutions.
 
@@ -67,6 +70,8 @@ The Tubb5 fixture keeps its sequence-locked regression correction. Live mouse an
 
 The fixed payload is 729 bp (`GGGGSAS` linker + 235-aa mNeonGreen + `TGA`). The predicted fusion is 686 aa. The donor insert is 1,975 bp and the simulated circular plasmid is 3,950 bp.
 
+The bundled result also locks three genotyping assays: a 1,290-bp WT-locus product (2,016 bp from the edited allele), an 845-bp 5-prime junction product, and an 804-bp 3-prime junction product. Both external locus primers are outside the homology arms and absent from the assembled donor plasmid; both payload primers are more than 150 bp from their tested junction.
+
 ## Uploaded-backbone verification
 
 The bundled `data/addgene_169227.dna` file is parsed directly. The expected input properties are:
@@ -88,7 +93,7 @@ The bundled `data/addgene-169226.dna` N-terminal backbone is also verified direc
 - extracted payload: 726 bp (235-aa mNeonGreen followed by GGGGSAS; no stop codon)
 - 600-bp-arm donor insert/final plasmid: 1,972 bp / 3,947 bp
 
-For a custom `.dna` upload, the app requires a circular record, exactly four SapI sites in one supported order, a frame-compatible payload, the expected GGGGSAS junction linker, and no internal in-frame stop. A cassette crossing the file's sequence origin must first be rotated so the `TAC` cut precedes the payload.
+For a custom `.dna` upload, the app requires a circular record and exactly four SapI sites in one supported order. A conventional frame-compatible payload with the expected GGGGSAS junction linker receives the single-fusion interpretation. Multi-ORF, non-coding, internal-stop, missing-linker, and non-frame cassettes are accepted and assembled, but are labelled as complex payloads and no single fusion-protein translation is asserted. A cassette crossing the file's sequence origin must first be rotated so the `TAC` cut precedes the payload.
 
 ## Important limitations
 
@@ -101,3 +106,4 @@ This is a computational design aid, not an experimentally validated clinical or 
 - `data/bollen_supplementary_s1.docx`: N- and C-terminal fragment/primer architecture supplied from the original paper.
 - Ensembl REST: live human/mouse transcript and reference-sequence retrieval.
 - UCSC/GENCODE mm39: bundled Tubb5 reference fixture.
+- Primer3/primer3-py: PCR-primer melting temperatures and secondary-structure calculations; default 18-27-nt, 57-63 C, 35-65% GC rule set.
