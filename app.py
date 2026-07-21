@@ -15,10 +15,11 @@ from hdr_designer.exports import (
     design_report,
     guide_rows,
     guides_csv,
+    sapi_qc_rows,
 )
 from hdr_designer.models import DesignResult, HomologyArm
 
-APP_VERSION = "0.3.1"
+APP_VERSION = "0.4.0"
 
 
 def _download_buttons(result: DesignResult) -> None:
@@ -60,14 +61,14 @@ def _show_arm(arm: HomologyArm) -> None:
                 "GC (%)": arm.gc_percent,
                 "Raw SapI sites": len(arm.sapi_sites),
                 "Final SapI sites": len(arm.final_sapi_sites),
-                "Silent changes": len(arm.mutations),
+                "Verified synonymous changes": len(arm.mutations),
             }]
         ),
         hide_index=True,
         width="stretch",
     )
     if arm.mutations:
-        st.markdown("**Silent changes in final arm**")
+        st.markdown("**Verified synonymous changes in final arm**")
         st.dataframe(
             pd.DataFrame([asdict(mutation) for mutation in arm.mutations]),
             hide_index=True,
@@ -80,6 +81,50 @@ def _show_arm(arm: HomologyArm) -> None:
             st.code(arm.final_gene_oriented_sequence, language=None)
     with st.expander("Chromosome-forward reference sequence"):
         st.code(arm.chromosome_forward_sequence, language=None)
+
+
+def _show_sapi_quality_control(result: DesignResult) -> None:
+    st.markdown("### SapI arm quality control")
+    arms = (result.five_prime_arm, result.three_prime_arm)
+    rows = sapi_qc_rows(result)
+    found = sum(len(arm.sapi_sites) for arm in arms)
+    remaining = sum(len(arm.final_sapi_sites) for arm in arms)
+    resolved = sum(row["Status"] == "Resolved" for row in rows)
+    cols = st.columns(3)
+    cols[0].metric("Arm SapI sites found", found)
+    cols[1].metric("Arm SapI sites resolved", resolved)
+    cols[2].metric("Arm SapI sites remaining", remaining)
+
+    arm_rows = []
+    for arm in arms:
+        arm_resolved = sum(
+            row["Arm"] == arm.name and row["Status"] == "Resolved"
+            for row in rows
+        )
+        arm_rows.append(
+            {
+                "Arm": arm.name,
+                "Sites found": len(arm.sapi_sites),
+                "Sites resolved": arm_resolved,
+                "Sites remaining": len(arm.final_sapi_sites),
+            }
+        )
+    st.dataframe(pd.DataFrame(arm_rows), hide_index=True, width="stretch")
+
+    if found == 0 and remaining == 0:
+        st.success("No internal SapI recognition site was found in either homology arm.")
+    elif remaining == 0:
+        st.success(
+            f"All {found} internal SapI site(s) were removed from the final arm sequences."
+        )
+    else:
+        st.warning(
+            f"{remaining} SapI site(s) remain in the final arms; order-ready cloning "
+            "fragments are withheld pending review."
+        )
+    if rows:
+        st.markdown("#### Site-by-site resolution")
+        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
 
 
 def _show_result(result: DesignResult) -> None:
@@ -113,7 +158,7 @@ def _show_result(result: DesignResult) -> None:
         cols[1].metric("PAM", guide.pam)
         cols[2].metric("PAM strand", guide.chromosome_strand)
         cols[3].metric("Nick distance", f"{guide.distance_to_insertion} bp")
-        cols[4].metric("PAM disrupted", "yes" if guide.pam_destroyed else "no")
+        cols[4].metric("Final PAM disrupted", "yes" if guide.final_pam_destroyed else "no")
         cols[5].metric("Retained segment", f"{guide.final_longest_retained_segment} nt")
         st.code(f"5'-{guide.spacer}-{guide.pam}-3'", language=None)
         st.write(guide.rationale)
@@ -122,6 +167,8 @@ def _show_result(result: DesignResult) -> None:
         st.caption(result.guide_scoring_note)
         with st.expander("All ranked candidates"):
             st.dataframe(pd.DataFrame(guide_rows(result)), hide_index=True, width="stretch")
+
+    _show_sapi_quality_control(result)
 
     st.markdown("### Homology arms")
     tab_uha, tab_dha = st.tabs(["5-prime arm (UHA)", "3-prime arm (DHA)"])
@@ -240,7 +287,7 @@ def main() -> None:
     st.title("HDR Tag Designer")
     st.caption(
         f"Bollen-style ITPN gene-tagging prototype using SpCas9 D10A. Version {APP_VERSION} "
-        "verifies the uploaded Addgene #169227 backbone and reconstructs the full circular donor plasmid."
+        "adds verified synonymous guide blocking and SapI domestication to the fixed-backbone workflow."
     )
     st.info(
         "Species is the first design choice. The bundled Tubb5 test is reproducible offline; "
@@ -303,7 +350,8 @@ def main() -> None:
     st.markdown("#### Scope of this version")
     st.write(
         "ITPN / SpCas9 D10A; mouse GRCm39 or human GRCh38; reference sequence only; "
-        "fixed Addgene #169227 C-terminal mNeonGreen payload; custom backbones deferred."
+        "fixed Addgene #169227 C-terminal mNeonGreen payload; automatic synonymous coding "
+        "mutations with noncoding cases held for review; custom backbones deferred."
     )
 
     if not run:

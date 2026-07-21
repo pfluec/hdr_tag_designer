@@ -285,4 +285,6 @@ def _make_candidate(
         activity_heuristic=_activity_heuristic(spacer),
         rationale="; ".join(reasons),
         blocking_mutation_note=blocking_note,
+        final_pam=pam,
+        final_pam_destroyed=pam_destroyed,
     )

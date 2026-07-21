@@ -31,6 +31,8 @@ def guides_csv(result: DesignResult) -> str:
         "activity_heuristic",
         "target_destroyed",
         "pam_destroyed",
+        "final_pam",
+        "final_pam_destroyed",
         "initial_longest_retained_segment_nt",
         "final_longest_retained_segment_nt",
         "blocking_mutation_required_after_final_design",
@@ -55,6 +57,8 @@ def guides_csv(result: DesignResult) -> str:
                 "activity_heuristic": guide.activity_heuristic,
                 "target_destroyed": guide.target_destroyed,
                 "pam_destroyed": guide.pam_destroyed,
+                "final_pam": guide.final_pam,
+                "final_pam_destroyed": guide.final_pam_destroyed,
                 "initial_longest_retained_segment_nt": guide.longest_retained_segment,
                 "final_longest_retained_segment_nt": guide.final_longest_retained_segment,
                 "blocking_mutation_required_after_final_design": guide.blocking_mutation_required,
@@ -196,10 +200,28 @@ def assembled_plasmid_genbank(result: DesignResult) -> str:
         )
 
     coordinate_map = result.cloning_fragments.get("assembly_coordinate_map", {})
-    uha_start0 = coordinate_map.get("uha_start0")
-    if isinstance(uha_start0, int):
-        for mutation in result.five_prime_arm.mutations:
-            position0 = uha_start0 + mutation.arm_position1 - 1
+    for arm, coordinate_key in (
+        (result.five_prime_arm, "uha_start0"),
+        (result.three_prime_arm, "dha_start0"),
+    ):
+        arm_start0 = coordinate_map.get(coordinate_key)
+        if not isinstance(arm_start0, int):
+            continue
+        for mutation in arm.mutations:
+            position0 = arm_start0 + mutation.arm_position1 - 1
+            metadata = [
+                f"{mutation.reference_base}>{mutation.alternate_base}",
+                f"{mutation.original_codon}>{mutation.altered_codon}",
+                mutation.protein_consequence or mutation.amino_acid,
+            ]
+            if mutation.pam_before or mutation.pam_after:
+                metadata.append(f"PAM {mutation.pam_before}>{mutation.pam_after}")
+            if mutation.longest_retained_before is not None:
+                metadata.append(
+                    "longest retained target segment "
+                    f"{mutation.longest_retained_before}>{mutation.longest_retained_after} nt"
+                )
+            metadata.append(mutation.reason)
             record.features.append(
                 SeqFeature(
                     FeatureLocation(position0, position0 + 1, strand=1),
@@ -207,11 +229,7 @@ def assembled_plasmid_genbank(result: DesignResult) -> str:
                     qualifiers={
                         "label": [mutation.kind],
                         "replace": [mutation.alternate_base],
-                        "note": [
-                            f"{mutation.reference_base}>{mutation.alternate_base}; "
-                            f"{mutation.original_codon}>{mutation.altered_codon}; "
-                            f"{mutation.amino_acid}; {mutation.reason}"
-                        ],
+                        "note": ["; ".join(part for part in metadata if part)],
                     },
                 )
             )
@@ -234,6 +252,130 @@ def _boundary_description(boundary0: int) -> str:
     return f"between 1-based bases {boundary0:,} and {boundary0 + 1:,}"
 
 
+def _sapi_site_genomic_interval(
+    result: DesignResult,
+    arm: HomologyArm,
+    position0: int,
+    motif_length: int,
+) -> str:
+    if result.gene_strand == "+":
+        genomic_positions0 = range(
+            arm.genomic_start0 + position0,
+            arm.genomic_start0 + position0 + motif_length,
+        )
+    else:
+        first0 = arm.genomic_end0 - 1 - position0
+        genomic_positions0 = range(first0 - motif_length + 1, first0 + 1)
+    return (
+        f"chr{arm.chromosome}:{min(genomic_positions0) + 1:,}-"
+        f"{max(genomic_positions0) + 1:,}"
+    )
+
+
+def sapi_qc_rows(result: DesignResult) -> list[dict[str, Any]]:
+    """Return one quality-control row for every SapI site originally found in an arm."""
+    rows: list[dict[str, Any]] = []
+    for arm in (result.five_prime_arm, result.three_prime_arm):
+        final_site_keys = {
+            (str(site["motif"]), int(site["position0"]))
+            for site in arm.final_sapi_sites
+        }
+        raw_site_keys = {
+            (str(site["motif"]), int(site["position0"]))
+            for site in arm.sapi_sites
+        }
+        for site_number, site in enumerate(arm.sapi_sites, start=1):
+            motif = str(site["motif"])
+            position0 = int(site["position0"])
+            direct_mutations = [
+                mutation
+                for mutation in arm.mutations
+                if mutation.kind == "SapI domestication"
+                and position0 <= mutation.arm_position1 - 1 < position0 + len(motif)
+            ]
+            related_keys = {
+                (mutation.original_codon, mutation.altered_codon, mutation.reason)
+                for mutation in direct_mutations
+            }
+            related_mutations = [
+                mutation
+                for mutation in arm.mutations
+                if mutation.kind == "SapI domestication"
+                and (
+                    mutation in direct_mutations
+                    or (
+                        (mutation.original_codon, mutation.altered_codon, mutation.reason)
+                        in related_keys
+                        and any(
+                            abs(mutation.arm_position1 - direct.arm_position1) <= 2
+                            for direct in direct_mutations
+                        )
+                    )
+                )
+            ]
+            resolved = (motif, position0) not in final_site_keys
+            mutation_text = "; ".join(
+                f"arm base {mutation.arm_position1}, "
+                f"chr{arm.chromosome}:{mutation.genomic_position1:,} "
+                f"{mutation.reference_base}>{mutation.alternate_base}"
+                for mutation in related_mutations
+            ) or "None"
+            codon_changes = sorted(
+                {
+                    f"{mutation.original_codon}>{mutation.altered_codon}"
+                    for mutation in related_mutations
+                    if mutation.original_codon and mutation.altered_codon
+                }
+            )
+            protein_consequences = sorted(
+                {
+                    mutation.protein_consequence or mutation.amino_acid
+                    for mutation in related_mutations
+                    if mutation.protein_consequence or mutation.amino_acid
+                }
+            )
+            rows.append(
+                {
+                    "Arm": arm.name,
+                    "Site": site_number,
+                    "Motif": motif,
+                    "Arm interval": f"{position0 + 1}-{position0 + len(motif)}",
+                    "Genomic interval": _sapi_site_genomic_interval(
+                        result, arm, position0, len(motif)
+                    ),
+                    "Status": "Resolved" if resolved else "Unresolved - review required",
+                    "Mutation(s)": mutation_text,
+                    "Codon change": ", ".join(codon_changes) or "Not applicable",
+                    "Protein consequence": (
+                        ", ".join(protein_consequences) or "Not established"
+                    ),
+                    "Selection reason": (
+                        related_mutations[0].reason
+                        if related_mutations
+                        else "No verified synonymous correction was available."
+                    ),
+                }
+            )
+        for motif, position0 in sorted(final_site_keys - raw_site_keys, key=lambda item: item[1]):
+            rows.append(
+                {
+                    "Arm": arm.name,
+                    "Site": "new",
+                    "Motif": motif,
+                    "Arm interval": f"{position0 + 1}-{position0 + len(motif)}",
+                    "Genomic interval": _sapi_site_genomic_interval(
+                        result, arm, position0, len(motif)
+                    ),
+                    "Status": "New site introduced - blocked",
+                    "Mutation(s)": "See complete arm mutation list",
+                    "Codon change": "Review required",
+                    "Protein consequence": "Review required",
+                    "Selection reason": "A SapI site is present only in the final arm sequence.",
+                }
+            )
+    return rows
+
+
 def _guide_report(guide: GuideCandidate) -> list[str]:
     return [
         f"Rank {guide.rank}: 5'-{guide.spacer}-{guide.pam}-3'",
@@ -246,6 +388,8 @@ def _guide_report(guide: GuideCandidate) -> list[str]:
         f"  Activity heuristic: {guide.activity_heuristic}",
         f"  Intended edit disrupts target: {'yes' if guide.target_destroyed else 'no'}",
         f"  Intended edit disrupts PAM: {'yes' if guide.pam_destroyed else 'no'}",
+        f"  Final donor PAM: {guide.final_pam or guide.pam}",
+        f"  Final donor disrupts PAM: {'yes' if guide.final_pam_destroyed else 'no'}",
         f"  Longest original segment after the intended edit: {guide.longest_retained_segment} nt",
         f"  Longest original segment after any donor-protection edits: {guide.final_longest_retained_segment} nt",
         f"  Blocking mutation note: {guide.blocking_mutation_note or '(none)'}",
@@ -271,6 +415,19 @@ def _arm_report(arm: HomologyArm) -> list[str]:
                 f"{mutation.original_codon}>{mutation.altered_codon}; {mutation.amino_acid}."
             )
             lines.append(f"      Reason: {mutation.reason}")
+            if mutation.protein_consequence:
+                lines.append(f"      Protein consequence: {mutation.protein_consequence}")
+            if mutation.pam_before or mutation.pam_after:
+                lines.append(
+                    f"      PAM before/after: {mutation.pam_before or '(not applicable)'} -> "
+                    f"{mutation.pam_after or '(not applicable)'}"
+                )
+            if mutation.longest_retained_before is not None:
+                lines.append(
+                    "      Longest retained target segment before/after: "
+                    f"{mutation.longest_retained_before} -> "
+                    f"{mutation.longest_retained_after} nt"
+                )
     lines.extend(
         [
             "  Reference gene-oriented sequence (5'->3'):",
@@ -333,7 +490,34 @@ def design_report(result: DesignResult) -> str:
         lines.extend(_guide_report(guide))
         lines.append("")
 
-    lines.extend(["HOMOLOGY ARMS", "-" * 58])
+    sapi_rows = sapi_qc_rows(result)
+    sapi_found = sum(
+        len(arm.sapi_sites)
+        for arm in (result.five_prime_arm, result.three_prime_arm)
+    )
+    sapi_remaining = sum(
+        len(arm.final_sapi_sites)
+        for arm in (result.five_prime_arm, result.three_prime_arm)
+    )
+    lines.extend(["SAPI ARM QUALITY CONTROL", "-" * 58])
+    lines.append(f"Original SapI sites found in both arms: {sapi_found}")
+    lines.append(f"Original SapI sites resolved: {sum(row['Status'] == 'Resolved' for row in sapi_rows)}")
+    lines.append(f"SapI sites remaining in final arms: {sapi_remaining}")
+    if not sapi_rows:
+        lines.append("No GCTCTTC/GAAGAGC recognition motif was found in either arm.")
+    for row in sapi_rows:
+        lines.extend(
+            [
+                f"- {row['Arm']} site {row['Site']}: {row['Motif']} at arm bases "
+                f"{row['Arm interval']} ({row['Genomic interval']})",
+                f"  Status: {row['Status']}",
+                f"  Mutation(s): {row['Mutation(s)']}",
+                f"  Codon / protein: {row['Codon change']}; {row['Protein consequence']}",
+                f"  Reason: {row['Selection reason']}",
+            ]
+        )
+
+    lines.extend(["", "HOMOLOGY ARMS", "-" * 58])
     lines.extend(_arm_report(result.five_prime_arm))
     lines.append("")
     lines.extend(_arm_report(result.three_prime_arm))

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
+from itertools import combinations
 
 from .backbones import (
     BACKBONE_ADDGENE_ID,
@@ -36,7 +37,11 @@ from .fixtures import (
     TUBB5_TRANSCRIPT_ID,
     load_tubb5_cdna,
 )
-from .guides import GUIDE_SAFETY_CUTOFF_NT, enumerate_spcas9_guides
+from .guides import (
+    GUIDE_SAFETY_CUTOFF_NT,
+    enumerate_spcas9_guides,
+    longest_retained_segment_after_point_mutations,
+)
 from .models import (
     DesignResult,
     Exon,
@@ -50,6 +55,24 @@ from .sequence import CODON_TABLE, find_motif_positions, gc_percent, reverse_com
 
 class DesignError(RuntimeError):
     pass
+
+
+SPLICE_EDGE_EXCLUSION_NT = 3
+
+
+@dataclass(frozen=True)
+class _SynonymousPlan:
+    arm_name: str
+    codon_start_cdna0: int
+    original_codon: str
+    altered_codon: str
+    amino_acid: str
+    # arm index0, genomic position0, cDNA position0, reference base, alternate base
+    changes: tuple[tuple[int, int, int, str, str], ...]
+
+    @property
+    def change_count(self) -> int:
+        return len(self.changes)
 
 
 def _ordered_exons(record: TranscriptRecord) -> list[Exon]:
@@ -144,6 +167,136 @@ def _arm_index_to_genomic_position1(arm: HomologyArm, index0: int, strand: int) 
     return genomic0 + 1
 
 
+def _genomic_position0_to_arm_index(
+    arm: HomologyArm, genomic_position0: int, strand: int
+) -> int | None:
+    if not arm.genomic_start0 <= genomic_position0 < arm.genomic_end0:
+        return None
+    return (
+        genomic_position0 - arm.genomic_start0
+        if strand == 1
+        else arm.genomic_end0 - 1 - genomic_position0
+    )
+
+
+def _synonymous_plans_for_region(
+    *,
+    arm: HomologyArm,
+    strand: int,
+    transcript_mapping: list[int],
+    cds_start_cdna0: int,
+    cds_length: int,
+    current_cdna: list[str],
+    eligible_genomic_positions0: set[int],
+    protected_genomic_positions0: set[int] | None = None,
+) -> list[_SynonymousPlan]:
+    """Enumerate synonymous codon replacements touching a requested genomic region."""
+    protected_genomic_positions0 = protected_genomic_positions0 or set()
+    genome_to_cdna = {genomic0: cdna0 for cdna0, genomic0 in enumerate(transcript_mapping)}
+    cds_end_cdna0 = cds_start_cdna0 + cds_length
+    codon_starts: set[int] = set()
+    for genomic0 in eligible_genomic_positions0:
+        cdna0 = genome_to_cdna.get(genomic0)
+        if cdna0 is None or not cds_start_cdna0 <= cdna0 < cds_end_cdna0:
+            continue
+        cds_index0 = cdna0 - cds_start_cdna0
+        codon_starts.add(cdna0 - (cds_index0 % 3))
+
+    plans: list[_SynonymousPlan] = []
+    seen: set[tuple[tuple[int, str], ...]] = set()
+    for codon_start_cdna0 in sorted(codon_starts):
+        original_codon = "".join(current_cdna[codon_start_cdna0:codon_start_cdna0 + 3])
+        if len(original_codon) != 3:
+            continue
+        amino_acid = CODON_TABLE.get(original_codon)
+        # Do not rewrite a terminal stop automatically; stop-context changes require review.
+        if not amino_acid or amino_acid == "*":
+            continue
+        for altered_codon, altered_amino_acid in sorted(CODON_TABLE.items()):
+            if altered_codon == original_codon or altered_amino_acid != amino_acid:
+                continue
+            changes: list[tuple[int, int, int, str, str]] = []
+            valid = True
+            touches_eligible_position = False
+            for offset, (reference_base, alternate_base) in enumerate(
+                zip(original_codon, altered_codon)
+            ):
+                if reference_base == alternate_base:
+                    continue
+                cdna0 = codon_start_cdna0 + offset
+                genomic0 = transcript_mapping[cdna0]
+                if genomic0 in protected_genomic_positions0:
+                    valid = False
+                    break
+                arm_index0 = _genomic_position0_to_arm_index(arm, genomic0, strand)
+                if arm_index0 is None:
+                    valid = False
+                    break
+                if arm.final_gene_oriented_sequence[arm_index0] != reference_base:
+                    valid = False
+                    break
+                touches_eligible_position |= genomic0 in eligible_genomic_positions0
+                changes.append(
+                    (arm_index0, genomic0, cdna0, reference_base, alternate_base)
+                )
+            if not valid or not changes or not touches_eligible_position:
+                continue
+            signature = tuple(sorted((genomic0, alternate) for _, genomic0, _, _, alternate in changes))
+            if signature in seen:
+                continue
+            seen.add(signature)
+            plans.append(
+                _SynonymousPlan(
+                    arm_name=arm.name,
+                    codon_start_cdna0=codon_start_cdna0,
+                    original_codon=original_codon,
+                    altered_codon=altered_codon,
+                    amino_acid=amino_acid,
+                    changes=tuple(changes),
+                )
+            )
+    return plans
+
+
+def _splice_edge_exclusion_positions0(record: TranscriptRecord) -> set[int]:
+    protected: set[int] = set()
+    for exon in record.exons:
+        start0 = exon.start1 - 1
+        end0 = exon.end1
+        protected.update(range(start0, min(end0, start0 + SPLICE_EDGE_EXCLUSION_NT)))
+        protected.update(range(max(start0, end0 - SPLICE_EDGE_EXCLUSION_NT), end0))
+    return protected
+
+
+def _longest_homopolymer(sequence: str) -> int:
+    longest = 0
+    current = 0
+    previous = ""
+    for base in sequence:
+        current = current + 1 if base == previous else 1
+        longest = max(longest, current)
+        previous = base
+    return longest
+
+
+def _creates_longer_homopolymer(before: str, after: str) -> bool:
+    before_longest = _longest_homopolymer(before)
+    after_longest = _longest_homopolymer(after)
+    return after_longest >= 6 and after_longest > before_longest
+
+
+def _sequence_after_plans(
+    arm: HomologyArm, plans: tuple[_SynonymousPlan, ...]
+) -> str:
+    sequence = list(arm.final_gene_oriented_sequence)
+    for plan in plans:
+        if plan.arm_name != arm.name:
+            continue
+        for arm_index0, _, _, _, alternate_base in plan.changes:
+            sequence[arm_index0] = alternate_base
+    return "".join(sequence)
+
+
 def _apply_point_mutation(
     arm: HomologyArm,
     *,
@@ -156,6 +309,12 @@ def _apply_point_mutation(
     altered_codon: str,
     amino_acid: str,
     reason: str,
+    protein_consequence: str = "",
+    pam_before: str = "",
+    pam_after: str = "",
+    longest_retained_before: int | None = None,
+    longest_retained_after: int | None = None,
+    automatic: bool = True,
 ) -> HomologyArm:
     sequence = list(arm.final_gene_oriented_sequence)
     if not 0 <= index0 < len(sequence):
@@ -177,6 +336,12 @@ def _apply_point_mutation(
         original_codon=original_codon,
         altered_codon=altered_codon,
         amino_acid=amino_acid,
+        protein_consequence=protein_consequence,
+        pam_before=pam_before,
+        pam_after=pam_after,
+        longest_retained_before=longest_retained_before,
+        longest_retained_after=longest_retained_after,
+        automatic=automatic,
         reason=reason,
     )
     note = (
@@ -191,6 +356,463 @@ def _apply_point_mutation(
         mutations=[*arm.mutations, mutation],
         correction_note=" ".join(part for part in [arm.correction_note, note] if part),
     )
+
+
+def _apply_synonymous_plan(
+    arm: HomologyArm,
+    plan: _SynonymousPlan,
+    *,
+    strand: int,
+    current_cdna: list[str],
+    kind: str,
+    reason: str,
+    pam_before: str = "",
+    pam_after: str = "",
+    longest_retained_before: int | None = None,
+    longest_retained_after: int | None = None,
+) -> HomologyArm:
+    if arm.name != plan.arm_name:
+        return arm
+    for arm_index0, _, cdna0, _, alternate_base in plan.changes:
+        arm = _apply_point_mutation(
+            arm,
+            index0=arm_index0,
+            alternate_base=alternate_base,
+            strand=strand,
+            kind=kind,
+            transcript_position1=cdna0 + 1,
+            original_codon=plan.original_codon,
+            altered_codon=plan.altered_codon,
+            amino_acid=f"{plan.amino_acid} unchanged",
+            protein_consequence=f"synonymous ({plan.amino_acid})",
+            pam_before=pam_before,
+            pam_after=pam_after,
+            longest_retained_before=longest_retained_before,
+            longest_retained_after=longest_retained_after,
+            reason=reason,
+        )
+        current_cdna[cdna0] = alternate_base
+    return arm
+
+
+def _domesticate_sapi_sites(
+    *,
+    arm: HomologyArm,
+    record: TranscriptRecord,
+    transcript_mapping: list[int],
+    cds_start_cdna0: int,
+    current_cdna: list[str],
+) -> tuple[HomologyArm, list[str]]:
+    """Remove coding SapI sites with the smallest synonymous codon change available."""
+    warnings: list[str] = []
+    unresolved: set[tuple[str, int]] = set()
+    while True:
+        current_sites = _arm_site_records(arm.final_gene_oriented_sequence)
+        pending = [
+            site
+            for site in current_sites
+            if (str(site["motif"]), int(site["position0"])) not in unresolved
+        ]
+        if not pending:
+            break
+        site = pending[0]
+        motif = str(site["motif"])
+        motif_start0 = int(site["position0"])
+        eligible_genomic_positions0 = {
+            _arm_index_to_genomic_position1(arm, arm_index0, record.strand) - 1
+            for arm_index0 in range(motif_start0, motif_start0 + len(motif))
+        }
+        plans = _synonymous_plans_for_region(
+            arm=arm,
+            strand=record.strand,
+            transcript_mapping=transcript_mapping,
+            cds_start_cdna0=cds_start_cdna0,
+            cds_length=len(record.cds),
+            current_cdna=current_cdna,
+            eligible_genomic_positions0=eligible_genomic_positions0,
+            protected_genomic_positions0=_splice_edge_exclusion_positions0(record),
+        )
+        old_site_keys = {
+            (str(item["motif"]), int(item["position0"])) for item in current_sites
+        }
+        original_cds = "".join(
+            current_cdna[cds_start_cdna0:cds_start_cdna0 + len(record.cds)]
+        )
+        viable: list[tuple[tuple[int, int, str], _SynonymousPlan]] = []
+        for plan in plans:
+            candidate_sequence = _sequence_after_plans(arm, (plan,))
+            if _creates_longer_homopolymer(
+                arm.final_gene_oriented_sequence, candidate_sequence
+            ):
+                continue
+            new_sites = _arm_site_records(candidate_sequence)
+            new_site_keys = {
+                (str(item["motif"]), int(item["position0"])) for item in new_sites
+            }
+            if (motif, motif_start0) in new_site_keys:
+                continue
+            if not new_site_keys.issubset(old_site_keys):
+                continue
+            candidate_cdna = list(current_cdna)
+            for _, _, cdna0, _, alternate_base in plan.changes:
+                candidate_cdna[cdna0] = alternate_base
+            candidate_cds = "".join(
+                candidate_cdna[cds_start_cdna0:cds_start_cdna0 + len(record.cds)]
+            )
+            if translate(candidate_cds) != translate(original_cds):
+                continue
+            changes_outside_site = sum(
+                not (motif_start0 <= arm_index0 < motif_start0 + len(motif))
+                for arm_index0, _, _, _, _ in plan.changes
+            )
+            viable.append(
+                ((plan.change_count, changes_outside_site, plan.altered_codon), plan)
+            )
+        if not viable:
+            unresolved.add((motif, motif_start0))
+            genomic_positions = sorted(position + 1 for position in eligible_genomic_positions0)
+            warnings.append(
+                f"Internal SapI site {motif} in {arm.name} at arm base {motif_start0 + 1} "
+                f"(genomic bases {genomic_positions[0]}-{genomic_positions[-1]}) could not be "
+                "removed by a verified synonymous coding change; manual review is required."
+            )
+            continue
+        plan = min(viable, key=lambda item: item[0])[1]
+        arm = _apply_synonymous_plan(
+            arm,
+            plan,
+            strand=record.strand,
+            current_cdna=current_cdna,
+            kind="SapI domestication",
+            reason=(
+                f"Automatically remove the internal {motif} SapI recognition site with "
+                "the smallest verified synonymous codon replacement; the complete CDS "
+                "translation is unchanged and no new SapI site is created."
+            ),
+        )
+    return arm, warnings
+
+
+def _donor_target_after_edits(
+    guide: GuideCandidate,
+    *,
+    gene_strand: int,
+    arms: tuple[HomologyArm, HomologyArm],
+    additional_plans: tuple[_SynonymousPlan, ...] = (),
+) -> str:
+    """Apply gene-oriented arm substitutions to a guide-oriented target sequence."""
+    target = list(guide.target_with_pam)
+    edits: dict[int, str] = {}
+    for arm in arms:
+        for mutation in arm.mutations:
+            edits[mutation.genomic_position1 - 1] = mutation.alternate_base
+    for plan in additional_plans:
+        for _, genomic0, _, _, alternate_base in plan.changes:
+            edits[genomic0] = alternate_base
+
+    for genomic0, alternate_gene_base in edits.items():
+        if not guide.target_start0 <= genomic0 < guide.target_end0:
+            continue
+        target_index0 = (
+            genomic0 - guide.target_start0
+            if guide.chromosome_strand == "+"
+            else guide.target_end0 - 1 - genomic0
+        )
+        alternate_chromosome_base = (
+            alternate_gene_base
+            if gene_strand == 1
+            else reverse_complement(alternate_gene_base)
+        )
+        target[target_index0] = (
+            alternate_chromosome_base
+            if guide.chromosome_strand == "+"
+            else reverse_complement(alternate_chromosome_base)
+        )
+    return "".join(target)
+
+
+def _mutated_genomic_positions0(
+    arms: tuple[HomologyArm, HomologyArm],
+    additional_plans: tuple[_SynonymousPlan, ...] = (),
+) -> list[int]:
+    positions = {
+        mutation.genomic_position1 - 1
+        for arm in arms
+        for mutation in arm.mutations
+    }
+    positions.update(
+        genomic0
+        for plan in additional_plans
+        for _, genomic0, _, _, _ in plan.changes
+    )
+    return sorted(positions)
+
+
+def _retained_after_donor_edits(
+    guide: GuideCandidate,
+    *,
+    insertion_boundary0: int,
+    removed_start0: int,
+    removed_end0: int,
+    arms: tuple[HomologyArm, HomologyArm],
+    additional_plans: tuple[_SynonymousPlan, ...] = (),
+) -> int:
+    return longest_retained_segment_after_point_mutations(
+        target_start0=guide.target_start0,
+        target_end0=guide.target_end0,
+        insertion_boundary0=insertion_boundary0,
+        removed_start0=removed_start0,
+        removed_end0=removed_end0,
+        mutated_genomic_positions0=_mutated_genomic_positions0(arms, additional_plans),
+    )
+
+
+def _guide_plan_preserves_sapi_sites(
+    arms: tuple[HomologyArm, HomologyArm], plans: tuple[_SynonymousPlan, ...]
+) -> bool:
+    for arm in arms:
+        before = {
+            (str(site["motif"]), int(site["position0"]))
+            for site in _arm_site_records(arm.final_gene_oriented_sequence)
+        }
+        after = {
+            (str(site["motif"]), int(site["position0"]))
+            for site in _arm_site_records(_sequence_after_plans(arm, plans))
+        }
+        if not after.issubset(before):
+            return False
+    return True
+
+
+def _design_guide_blocking_mutations(
+    *,
+    guide: GuideCandidate,
+    five_prime_arm: HomologyArm,
+    three_prime_arm: HomologyArm,
+    record: TranscriptRecord,
+    transcript_mapping: list[int],
+    cds_start_cdna0: int,
+    current_cdna: list[str],
+    insertion_boundary0: int,
+    removed_start0: int,
+    removed_end0: int,
+) -> tuple[HomologyArm, HomologyArm, list[str]]:
+    """Protect the edited allele with verified synonymous PAM/seed changes."""
+    warnings: list[str] = []
+    arms = (five_prime_arm, three_prime_arm)
+    current_target = _donor_target_after_edits(
+        guide, gene_strand=record.strand, arms=arms
+    )
+    current_retained = _retained_after_donor_edits(
+        guide,
+        insertion_boundary0=insertion_boundary0,
+        removed_start0=removed_start0,
+        removed_end0=removed_end0,
+        arms=arms,
+    )
+    current_pam = current_target[-3:]
+    current_pam_functional = current_target[21:23] == "GG"
+    guide.final_pam = current_pam
+    guide.final_pam_destroyed = guide.pam_destroyed or not current_pam_functional
+    guide.final_longest_retained_segment = current_retained
+    guide.blocking_mutation_required = (
+        not guide.final_pam_destroyed
+        and current_retained > GUIDE_SAFETY_CUTOFF_NT
+    )
+
+    if not guide.blocking_mutation_required:
+        if guide.pam_destroyed:
+            return five_prime_arm, three_prime_arm, warnings
+        if current_target != guide.target_with_pam:
+            guide.blocking_mutation_note = (
+                "No additional guide-blocking mutation is required: an automatically "
+                f"designed donor correction changes the PAM from {guide.pam} to {current_pam} "
+                f"or reduces the longest retained segment from {guide.longest_retained_segment} "
+                f"to {current_retained} nt."
+            )
+        return five_prime_arm, three_prime_arm, warnings
+
+    eligible_genomic_positions0 = set(range(guide.target_start0, guide.target_end0))
+    existing_mutated_positions0 = set(_mutated_genomic_positions0(arms))
+    plans: list[_SynonymousPlan] = []
+    for arm in arms:
+        plans.extend(
+            _synonymous_plans_for_region(
+                arm=arm,
+                strand=record.strand,
+                transcript_mapping=transcript_mapping,
+                cds_start_cdna0=cds_start_cdna0,
+                cds_length=len(record.cds),
+                current_cdna=current_cdna,
+                eligible_genomic_positions0=eligible_genomic_positions0,
+                protected_genomic_positions0=_splice_edge_exclusion_positions0(record),
+            )
+        )
+    plans = [
+        plan
+        for plan in plans
+        if not existing_mutated_positions0.intersection(
+            genomic0 for _, genomic0, _, _, _ in plan.changes
+        )
+    ]
+
+    original_cds = "".join(
+        current_cdna[cds_start_cdna0:cds_start_cdna0 + len(record.cds)]
+    )
+    viable: list[
+        tuple[tuple[int, int, int, int, tuple[tuple[int, str], ...]], tuple[_SynonymousPlan, ...], str, int]
+    ] = []
+    for plan_count in range(1, min(3, len(plans)) + 1):
+        for selected in combinations(plans, plan_count):
+            codon_keys = {(plan.arm_name, plan.codon_start_cdna0) for plan in selected}
+            if len(codon_keys) != len(selected):
+                continue
+            merged: dict[int, str] = {}
+            conflict = False
+            for plan in selected:
+                for _, genomic0, _, _, alternate_base in plan.changes:
+                    if genomic0 in merged and merged[genomic0] != alternate_base:
+                        conflict = True
+                        break
+                    merged[genomic0] = alternate_base
+                if conflict:
+                    break
+            if conflict or not _guide_plan_preserves_sapi_sites(arms, selected):
+                continue
+            if any(
+                _creates_longer_homopolymer(
+                    arm.final_gene_oriented_sequence,
+                    _sequence_after_plans(arm, selected),
+                )
+                for arm in arms
+            ):
+                continue
+            candidate_cdna = list(current_cdna)
+            for plan in selected:
+                for _, _, cdna0, _, alternate_base in plan.changes:
+                    candidate_cdna[cdna0] = alternate_base
+            candidate_cds = "".join(
+                candidate_cdna[cds_start_cdna0:cds_start_cdna0 + len(record.cds)]
+            )
+            if translate(candidate_cds) != translate(original_cds):
+                continue
+            target_after = _donor_target_after_edits(
+                guide,
+                gene_strand=record.strand,
+                arms=arms,
+                additional_plans=selected,
+            )
+            pam_after = target_after[-3:]
+            pam_destroyed = target_after[21:23] != "GG"
+            retained_after = _retained_after_donor_edits(
+                guide,
+                insertion_boundary0=insertion_boundary0,
+                removed_start0=removed_start0,
+                removed_end0=removed_end0,
+                arms=arms,
+                additional_plans=selected,
+            )
+            if not pam_destroyed and retained_after > GUIDE_SAFETY_CUTOFF_NT:
+                continue
+            target_indexes = [
+                (
+                    genomic0 - guide.target_start0
+                    if guide.chromosome_strand == "+"
+                    else guide.target_end0 - 1 - genomic0
+                )
+                for genomic0 in merged
+            ]
+            closest_to_pam = min(
+                (0 if index0 >= 20 else 20 - index0) for index0 in target_indexes
+            )
+            signature = tuple(sorted(merged.items()))
+            score = (
+                0 if pam_destroyed else 1,
+                len(merged),
+                closest_to_pam,
+                retained_after,
+                signature,
+            )
+            viable.append((score, selected, pam_after, retained_after))
+
+    if not viable:
+        guide.blocking_mutation_note = (
+            "A guide-blocking mutation is still required. No synonymous coding change "
+            "within the retained target could destroy the PAM or satisfy the 14-nt cutoff; "
+            "noncoding changes are not released automatically. Manual review or another "
+            "guide is required."
+        )
+        warnings.append(guide.blocking_mutation_note)
+        return five_prime_arm, three_prime_arm, warnings
+
+    _, selected_plans, final_pam, final_retained = min(viable, key=lambda item: item[0])
+    pam_destroyed = final_pam[1:3] != "GG"
+    reason = (
+        f"Automatically protect the edited allele by changing the selected guide PAM from "
+        f"{current_pam} to {final_pam} with a verified synonymous codon replacement."
+        if pam_destroyed
+        else (
+            "Automatically protect the edited allele with the smallest verified synonymous "
+            f"seed change set, reducing the longest retained target segment from "
+            f"{current_retained} to {final_retained} nt (cutoff <= {GUIDE_SAFETY_CUTOFF_NT} nt)."
+        )
+    )
+    for plan in selected_plans:
+        if plan.arm_name == five_prime_arm.name:
+            five_prime_arm = _apply_synonymous_plan(
+                five_prime_arm,
+                plan,
+                strand=record.strand,
+                current_cdna=current_cdna,
+                kind="Guide blocking",
+                reason=reason,
+                pam_before=current_pam,
+                pam_after=final_pam,
+                longest_retained_before=current_retained,
+                longest_retained_after=final_retained,
+            )
+        elif plan.arm_name == three_prime_arm.name:
+            three_prime_arm = _apply_synonymous_plan(
+                three_prime_arm,
+                plan,
+                strand=record.strand,
+                current_cdna=current_cdna,
+                kind="Guide blocking",
+                reason=reason,
+                pam_before=current_pam,
+                pam_after=final_pam,
+                longest_retained_before=current_retained,
+                longest_retained_after=final_retained,
+            )
+
+    final_arms = (five_prime_arm, three_prime_arm)
+    verified_target = _donor_target_after_edits(
+        guide, gene_strand=record.strand, arms=final_arms
+    )
+    verified_retained = _retained_after_donor_edits(
+        guide,
+        insertion_boundary0=insertion_boundary0,
+        removed_start0=removed_start0,
+        removed_end0=removed_end0,
+        arms=final_arms,
+    )
+    if verified_target[-3:] != final_pam or verified_retained != final_retained:
+        raise DesignError("Guide-blocking mutation verification did not reproduce its prediction")
+    guide.final_pam = final_pam
+    guide.final_pam_destroyed = guide.pam_destroyed or verified_target[21:23] != "GG"
+    guide.final_longest_retained_segment = verified_retained
+    guide.blocking_mutation_required = (
+        not guide.final_pam_destroyed
+        and verified_retained > GUIDE_SAFETY_CUTOFF_NT
+    )
+    if guide.blocking_mutation_required:
+        raise DesignError("Automatically designed guide-blocking mutation did not pass the safety gate")
+    guide.blocking_mutation_note = (
+        f"Automatic synonymous guide blocking applied: PAM {current_pam}->{final_pam}; "
+        f"longest retained segment {current_retained}->{verified_retained} nt. "
+        "The complete CDS translation is unchanged and no SapI site was created."
+    )
+    return five_prime_arm, three_prime_arm, warnings
 
 
 def _tubb5_corrected_five_prime_arm(
@@ -528,8 +1150,9 @@ def _finalize_result(
         homology_arm_length=arm_length,
         guide_safety_cutoff_nt=GUIDE_SAFETY_CUTOFF_NT,
         guide_scoring_note=(
-            "Rank: nick distance, target disruption, then basic spacer heuristics. "
-            "No quantitative on-target or off-target model is run."
+            "Rank: nick distance first, then target disruption and basic spacer heuristics. "
+            "A nearer guide remains preferred when it can be protected with a verified "
+            "synonymous donor mutation; no quantitative on-target or off-target model is run."
         ),
         guides=guides,
         five_prime_arm=five_prime_arm,
@@ -627,6 +1250,25 @@ def design_online(
         gene_strand=record.strand,
     )
 
+    current_cdna = list(record.cdna)
+    mutation_warnings: list[str] = []
+    five_arm, warnings = _domesticate_sapi_sites(
+        arm=five_arm,
+        record=record,
+        transcript_mapping=mapping,
+        cds_start_cdna0=cds_start,
+        current_cdna=current_cdna,
+    )
+    mutation_warnings.extend(warnings)
+    three_arm, warnings = _domesticate_sapi_sites(
+        arm=three_arm,
+        record=record,
+        transcript_mapping=mapping,
+        cds_start_cdna0=cds_start,
+        current_cdna=current_cdna,
+    )
+    mutation_warnings.extend(warnings)
+
     margin = guide_window + 30
     guide_start0 = max(0, insertion_boundary0 - margin)
     guide_end0 = insertion_boundary0 + margin
@@ -640,6 +1282,26 @@ def design_online(
         removed_start0=removed_start0,
         removed_end0=removed_end0,
     )
+    if guides:
+        five_arm, three_arm, warnings = _design_guide_blocking_mutations(
+            guide=guides[0],
+            five_prime_arm=five_arm,
+            three_prime_arm=three_arm,
+            record=record,
+            transcript_mapping=mapping,
+            cds_start_cdna0=cds_start,
+            current_cdna=current_cdna,
+            insertion_boundary0=insertion_boundary0,
+            removed_start0=removed_start0,
+            removed_end0=removed_end0,
+        )
+        mutation_warnings.extend(warnings)
+
+    edited_cds_without_stop = "".join(
+        current_cdna[cds_start:cds_start + len(cds_without_stop)]
+    )
+    if translate(edited_cds_without_stop) != translate(cds_without_stop):
+        raise DesignError("Automatic donor mutations changed the reference protein sequence")
 
     return _finalize_result(
         record=record,
@@ -651,7 +1313,7 @@ def design_online(
         removed_end0=removed_end0,
         removed_gene_sequence=removed_gene_sequence,
         cds_without_stop=cds_without_stop,
-        edited_cds_without_stop=cds_without_stop,
+        edited_cds_without_stop=edited_cds_without_stop,
         five_prime_arm=five_arm,
         three_prime_arm=three_arm,
         guides=guides,
@@ -661,7 +1323,9 @@ def design_online(
             "Guide/arm rules and SapI adapters follow Bollen et al. 2022 supplementary S1/S3.",
             "Uploaded Addgene #169227 SnapGene sequence parsed and checked against the Bollen supplementary SapI overhang architecture.",
             "Fixed linker-mNeonGreen-stop payload extracted from the uploaded backbone and verified against Bollen supplementary S2.",
+            "Coding SapI sites and selected-guide retargeting are evaluated with generic synonymous-codon search and full-CDS translation checks.",
         ],
+        extra_warnings=mutation_warnings,
     )
 
 

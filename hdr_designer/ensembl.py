@@ -32,58 +32,96 @@ class EnsemblError(RuntimeError):
 class EnsemblClient:
     """Small, explicit wrapper around the public Ensembl REST API."""
 
-    def __init__(self, base_url: str = "https://rest.ensembl.org", timeout: float = 30.0):
+    def __init__(
+        self,
+        base_url: str = "https://rest.ensembl.org",
+        timeout: float = 30.0,
+        *,
+        max_retries: int = 3,
+        retry_backoff: float = 0.5,
+    ):
+        if max_retries < 0:
+            raise ValueError("max_retries cannot be negative")
+        if retry_backoff < 0:
+            raise ValueError("retry_backoff cannot be negative")
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        self.max_retries = max_retries
+        self.retry_backoff = retry_backoff
         self.session = requests.Session()
         self.session.headers.update(
             {
-                "User-Agent": "HDRTagDesigner/0.3.1 (research prototype)",
+                "User-Agent": "HDRTagDesigner/0.4.0 (research prototype)",
                 "Accept": "application/json",
             }
         )
 
-    def _request_json(self, path: str, params: dict[str, Any] | None = None) -> Any:
+    def _retry_delay(self, response: requests.Response | None, attempt: int) -> float:
+        if response is not None:
+            try:
+                return min(max(float(response.headers.get("Retry-After", "")), 0.0), 5.0)
+            except (TypeError, ValueError):
+                pass
+        return min(self.retry_backoff * (2 ** attempt), 5.0)
+
+    def _request(
+        self,
+        path: str,
+        *,
+        params: dict[str, Any] | None,
+        accept: str,
+    ) -> requests.Response:
         url = f"{self.base_url}{path}"
-        try:
-            response = self.session.get(
-                url,
-                params=params,
-                headers={"Content-Type": "application/json"},
-                timeout=self.timeout,
-            )
-        except requests.RequestException as exc:
-            raise EnsemblError(f"Could not contact Ensembl REST: {exc}") from exc
-        if response.status_code == 429:
-            retry_after = float(response.headers.get("Retry-After", "1"))
-            time.sleep(min(retry_after, 5.0))
-            return self._request_json(path, params)
-        if not response.ok:
-            raise EnsemblError(
-                f"Ensembl REST returned HTTP {response.status_code} for {path}: "
-                f"{response.text[:300]}"
-            )
+        for attempt in range(self.max_retries + 1):
+            try:
+                response = self.session.get(
+                    url,
+                    params=params,
+                    headers={"Content-Type": accept, "Accept": accept},
+                    timeout=self.timeout,
+                )
+            except requests.RequestException as exc:
+                if attempt < self.max_retries:
+                    time.sleep(self._retry_delay(None, attempt))
+                    continue
+                raise EnsemblError(
+                    f"Could not contact Ensembl after {attempt + 1} attempts. "
+                    "Check the network connection and try again."
+                ) from exc
+            retryable = response.status_code == 429 or 500 <= response.status_code < 600
+            if retryable and attempt < self.max_retries:
+                time.sleep(self._retry_delay(response, attempt))
+                continue
+            if retryable:
+                raise EnsemblError(
+                    f"Ensembl is temporarily unavailable for {path} "
+                    f"(HTTP {response.status_code} after {attempt + 1} attempts). Try again later."
+                )
+            if not response.ok:
+                raise EnsemblError(
+                    f"Ensembl rejected the request for {path} (HTTP {response.status_code}). "
+                    "Check the gene/transcript identifier and selected species."
+                )
+            return response
+        raise AssertionError("Ensembl retry loop ended unexpectedly")
+
+    def _request_json(self, path: str, params: dict[str, Any] | None = None) -> Any:
+        response = self._request(
+            path,
+            params=params,
+            accept="application/json",
+        )
         try:
             return response.json()
         except ValueError as exc:
             raise EnsemblError(f"Ensembl returned invalid JSON for {path}") from exc
 
     def _request_sequence(self, path: str, params: dict[str, Any] | None = None) -> str:
-        url = f"{self.base_url}{path}"
-        try:
-            response = self.session.get(
-                url,
-                params=params,
-                headers={"Content-Type": "text/plain", "Accept": "text/plain"},
-                timeout=self.timeout,
-            )
-        except requests.RequestException as exc:
-            raise EnsemblError(f"Could not contact Ensembl REST: {exc}") from exc
-        if not response.ok:
-            raise EnsemblError(
-                f"Ensembl REST returned HTTP {response.status_code} for {path}: "
-                f"{response.text[:300]}"
-            )
+        response = self._request(
+            path,
+            params=params,
+            accept="text/plain",
+        )
         return clean_dna(response.text)
 
     def resolve_gene(self, species: SpeciesConfig, symbol_or_id: str) -> dict[str, Any]:
@@ -124,6 +162,17 @@ class EnsemblClient:
             if selected is None:
                 # A direct transcript lookup handles transcripts not included in a reduced gene result.
                 selected = self._request_json(f"/lookup/id/{requested}", {"expand": 1})
+                parent = str(selected.get("Parent", ""))
+                if not parent:
+                    raise EnsemblError(
+                        f"Ensembl did not provide a parent gene for transcript {requested}; "
+                        "its relationship to the selected gene could not be verified."
+                    )
+                if parent != str(gene.get("id", "")):
+                    raise EnsemblError(
+                        f"Transcript {requested} belongs to gene {parent}, not the selected "
+                        f"gene {gene.get('id', symbol_or_gene_id)}."
+                    )
         elif canonical:
             selected = next((item for item in transcripts if item.get("id") == canonical), None)
         if selected is None:
@@ -134,6 +183,17 @@ class EnsemblClient:
 
         stable_id = selected["id"]
         expanded = self._request_json(f"/lookup/id/{stable_id}", {"expand": 1})
+        parent = str(expanded.get("Parent", ""))
+        if parent and parent != str(gene.get("id", "")):
+            raise EnsemblError(
+                f"Transcript {stable_id} belongs to gene {parent}, not the selected gene "
+                f"{gene.get('id', symbol_or_gene_id)}."
+            )
+        biotype = str(expanded.get("biotype", selected.get("biotype", "")))
+        if biotype and biotype != "protein_coding":
+            raise EnsemblError(
+                f"Transcript {stable_id} is {biotype}, not protein-coding, and cannot be tagged."
+            )
         cdna = self._request_sequence(f"/sequence/id/{stable_id}", {"type": "cdna"})
         cds = self._request_sequence(f"/sequence/id/{stable_id}", {"type": "cds"})
         exons = [

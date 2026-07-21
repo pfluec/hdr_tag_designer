@@ -24,6 +24,7 @@ from hdr_designer.exports import (
     design_json,
     design_report,
     guides_csv,
+    sapi_qc_rows,
 )
 from hdr_designer.sequence import reverse_complement, translate
 
@@ -87,6 +88,35 @@ class Tubb5DesignTest(unittest.TestCase):
         for motif in SAPI_RECOGNITION_MOTIFS:
             self.assertNotIn(motif, five.final_gene_oriented_sequence)
             self.assertNotIn(motif, self.result.three_prime_arm.final_gene_oriented_sequence)
+
+    def test_sapi_quality_control_summary(self) -> None:
+        rows = sapi_qc_rows(self.result)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(
+            {
+                "Arm": rows[0]["Arm"],
+                "Motif": rows[0]["Motif"],
+                "Arm interval": rows[0]["Arm interval"],
+                "Genomic interval": rows[0]["Genomic interval"],
+                "Status": rows[0]["Status"],
+                "Codon change": rows[0]["Codon change"],
+                "Protein consequence": rows[0]["Protein consequence"],
+            },
+            {
+                "Arm": "5-prime homology arm",
+                "Motif": "GCTCTTC",
+                "Arm interval": "396-402",
+                "Genomic interval": "chr17:36,146,075-36,146,081",
+                "Status": "Resolved",
+                "Codon change": "GAG>GAA",
+                "Protein consequence": "Glu (E)",
+            },
+        )
+        self.assertIn("arm base 396", rows[0]["Mutation(s)"])
+        report = design_report(self.result)
+        self.assertIn("SAPI ARM QUALITY CONTROL", report)
+        self.assertIn("Original SapI sites found in both arms: 1", report)
+        self.assertIn("Original SapI sites resolved: 1", report)
 
     def test_fixed_payload_and_fusion(self) -> None:
         payload = self.result.donor_payload

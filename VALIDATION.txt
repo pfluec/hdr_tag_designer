@@ -1,17 +1,36 @@
-HDR TAG DESIGNER v0.3.0 - VALIDATION RECORD
+HDR TAG DESIGNER v0.4.0 - VALIDATION RECORD
 =======================================================
 
-Validation date: 2026-07-20
-Scope: fixed Addgene #169227 C-terminal mNeonGreen prototype; custom backbones/tags deferred.
+Validation date: 2026-07-21
+Scope: fixed Addgene #169227 C-terminal mNeonGreen workflow with generic synonymous guide blocking and SapI domestication; custom backbones/tags deferred.
 
 AUTOMATED TESTS
 -------------------------------------------------------
-PASS: 15/15 Python unit/integration tests.
+PASS: 28/28 Python unit/integration tests.
 PASS: Streamlit default Tubb5 workflow via streamlit.testing.v1.AppTest.
 PASS: mocked live-design code paths for mouse GRCm39 and human GRCh38.
 PASS: N-terminal code path is explicitly limited to a locus-design preview with this C-terminal backbone.
 PASS: headless Streamlit health endpoint returned ok.
 PASS: Python bytecode compilation for app, package, scripts, and tests.
+
+AUTOMATIC SYNONYMOUS MUTATIONS
+-------------------------------------------------------
+PASS: Nearest-guide priority is retained when the closer guide needs a synonymous blocking mutation.
+PASS: Coding PAM destruction (GGG -> GGA) releases a sequence-complete donor after full-CDS translation validation.
+PASS: Synonymous seed mutation is selected when the PAM cannot be changed, reducing the retained segment to <=14 nt.
+PASS: Coding SapI sites, including multiple sites and reverse-strand loci, are domesticated without changing translation or creating a new SapI site.
+PASS: Noncoding SapI sites and guide targets without a safe synonymous solution remain blocked for manual review.
+PASS: Mutation metadata is propagated into final arms, edited CDS, assembled plasmid, TXT, JSON, FASTA, and GenBank output.
+PASS: Exonic bases within 3 nt of splice boundaries and changes that lengthen a >=6-nt homopolymer are excluded.
+PASS: Streamlit and TXT outputs show total/per-arm SapI counts and site-level mutation details for resolved and unresolved sites.
+
+ENSEMBL RESILIENCE
+-------------------------------------------------------
+PASS: HTTP 429, HTTP 5xx, and connection failures use bounded retries.
+PASS: User-facing failures omit returned HTML bodies.
+PASS: Explicit transcript IDs are checked against the selected parent gene and protein-coding biotype.
+PASS: Live Ensembl smoke test resolved ENSMUST00000001566.11 and produced the expected sequence-complete Tubb5 design; the offline fixture remains the reproducible .10 snapshot.
+PASS: Live human TUBB5 smoke test selected ENST00000327892.13 and produced a sequence-complete C-terminal design with a 1-bp guide distance.
 
 UPLOADED BACKBONE
 -------------------------------------------------------
@@ -41,16 +60,17 @@ GenBank round trip: PASS (3950 bp, 19 annotated features, topology circular).
 
 GENERATED OUTPUTS
 -------------------------------------------------------
-outputs/tubb5_test/Tubb5_C_terminal_design_report.txt | 28864 bytes | SHA-256 68ac68a315ab9fb6b586d67d7e1a951aa17da74bb1bdfa0ad77bee39018e2a55
-outputs/tubb5_test/Tubb5_guides.csv | 6179 bytes | SHA-256 1db29e8b5d516c6f4532913d602cd263114d26b9a6c4c498b54c7ed2453e8de8
+outputs/tubb5_test/Tubb5_C_terminal_design_report.txt | 31644 bytes | SHA-256 557342034d8a732dc2f1096fff582bfb390e31f5d06599cc2a69a188356c0640
+outputs/tubb5_test/Tubb5_guides.csv | 9311 bytes | SHA-256 6b86497c840a1ad43011f658cd8f3fa5b677ff7bd3018765d6eaf27359b40a3d
 outputs/tubb5_test/Tubb5_homology_arms.fasta | 13915 bytes | SHA-256 6bb81f8ebe0bfb688a76d8561568205548412fc1c511f4549235fead5b5b910f
-outputs/tubb5_test/Tubb5_design.json | 49362 bytes | SHA-256 df9eb0239aba15b5270c3c3fa2a2c739456ca8ddff8f63fc1d0db391f0604d30
-outputs/tubb5_test/Tubb5_C_terminal_mNeonGreen_assembled_plasmid.gb | 9531 bytes | SHA-256 6a3790236f571b8ae847eec250a59389b25e4eadc50f4f0d887d9cc101d0829e
+outputs/tubb5_test/Tubb5_design.json | 53697 bytes | SHA-256 a425ab42c4b212947e9938be21f4e1cbec03d120986b0215ac3003d235094a5d
+outputs/tubb5_test/Tubb5_C_terminal_mNeonGreen_assembled_plasmid.gb | 9531 bytes | SHA-256 42878c1f8f50dfd8ccba15ce3e35ad9b5ced74aafbff46cfb0fd8023116af314
 
 KNOWN LIMITATIONS
 -------------------------------------------------------
 No off-target search or validated activity score is performed.
 Reference sequence only; no strain/cell-line variants are considered.
-Live Ensembl network calls were not executed inside the isolated build container; the same code paths were tested with deterministic Ensembl stand-ins for both species.
-Only the bundled Tubb5 test automatically applies a validated synonymous SapI correction. Other loci with internal SapI sites or an intact retargetable guide are flagged for manual review.
+Live Ensembl mouse and human smoke tests passed on 2026-07-21; deterministic stand-ins retain offline coverage for both species.
+Only coding changes with an identical reconstructed CDS translation are automated. Noncoding changes, splice-edge changes, and cases without a safe synonymous solution are flagged for manual review.
+Codon-usage optimization and comprehensive cryptic-splice/regulatory-motif prediction are not yet implemented.
 The result is a computational design and requires independent sequence, transcript, plasmid, and biological validation before experimental use.

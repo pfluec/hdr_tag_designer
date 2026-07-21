@@ -17,13 +17,19 @@ class StreamlitAppTest(unittest.TestCase):
         self.assertEqual(len(app.exception), 0)
         self.assertEqual(
             [message.value for message in app.success],
-            ["SEQUENCE-COMPLETE COMPUTATIONAL DESIGN"],
+            [
+                "SEQUENCE-COMPLETE COMPUTATIONAL DESIGN",
+                "All 1 internal SapI site(s) were removed from the final arm sequences.",
+            ],
         )
         metrics = {metric.label: metric.value for metric in app.metric}
         self.assertEqual(metrics["Transcript"], "ENSMUST00000001566.10")
         self.assertEqual(metrics["Fusion"], "686 aa")
         self.assertEqual(metrics["Final plasmid"], "3950 bp")
         self.assertEqual(metrics["Final SapI sites"], "0")
+        self.assertEqual(metrics["Arm SapI sites found"], "1")
+        self.assertEqual(metrics["Arm SapI sites resolved"], "1")
+        self.assertEqual(metrics["Arm SapI sites remaining"], "0")
         self.assertEqual(len(app.get("download_button")), 5)
 
 

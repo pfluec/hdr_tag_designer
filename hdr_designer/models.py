@@ -73,6 +73,8 @@ class GuideCandidate:
     activity_heuristic: str
     rationale: str
     blocking_mutation_note: str = ""
+    final_pam: str = ""
+    final_pam_destroyed: bool = False
 
     @property
     def target_with_pam(self) -> str:
@@ -95,6 +97,12 @@ class SequenceMutation:
     original_codon: str = ""
     altered_codon: str = ""
     amino_acid: str = ""
+    protein_consequence: str = ""
+    pam_before: str = ""
+    pam_after: str = ""
+    longest_retained_before: int | None = None
+    longest_retained_after: int | None = None
+    automatic: bool = True
     reason: str = ""
 
 

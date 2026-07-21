@@ -1,5 +1,5 @@
-HDR TAG DESIGNER v0.3.1 - VALIDATION SUMMARY
-Generated: 2026-07-20
+HDR TAG DESIGNER v0.4.0 - VALIDATION SUMMARY
+Generated: 2026-07-21
 
 SCOPE
 - Local Streamlit prototype for Bollen-style ITPN with SpCas9 D10A.
@@ -8,9 +8,13 @@ SCOPE
 - Reference sequence only; no genome-wide off-target analysis.
 - Custom donor backbones/tags are intentionally deferred.
 - N-terminal mode currently produces a locus/arm/guide preview; full cloning is C-terminal only for the supplied backbone.
+- Live coding designs automatically search verified synonymous guide-blocking and SapI-domestication changes; noncoding/unsafe cases remain blocked.
+- Guide proximity remains the primary ranking criterion even when the nearer guide needs a synonymous blocking change.
 
 TUBB5 COMPUTATIONAL TEST
 - Gene/transcript: mouse Tubb5-201, ENSMUST00000001566.10.
+- Live Ensembl smoke test (2026-07-21): the same stable transcript resolved as ENSMUST00000001566.11 and produced a sequence-complete design.
+- Live human smoke test (2026-07-21): TUBB5 selected ENST00000327892.13 and produced a sequence-complete design with a 1-bp guide distance.
 - Terminus: C-terminal.
 - Endogenous stop removed from DHA: TAA.
 - Insertion boundary0: 36145876.
@@ -45,16 +49,19 @@ UPLOADED BACKBONE CHECK
 - Reconstructed 729-bp linker-mNeonGreen-stop payload matches the bundled Bollen S2 sequence: True.
 
 AUTOMATED VALIDATION
-- Unit/integration tests: 15 passed.
+- Unit/integration tests: 28 passed.
 - Streamlit AppTest: passed.
 - Streamlit local server health endpoint: ok; root returned HTTP 200.
 - Generic mouse and human C-terminal code paths: passed with deterministic synthetic Ensembl client.
 - N-terminal preview path: passed with deterministic synthetic Ensembl client.
+- Generic synonymous PAM blocking, seed blocking, single/multiple SapI domestication, plus/minus strand mapping, unsafe-case refusal, and mutation export propagation: passed.
+- SapI quality-control panel and report summary: total/per-arm counts, site coordinates, mutation/codon details, protein consequence, and unresolved-site status passed.
+- Ensembl bounded retries for HTTP 429/5xx/network failures and explicit transcript-parent validation: passed.
 - Tubb5 guide, coordinates, PAM loss, arms, SapI domestication, S1/S3 adapters, fragment digests, full plasmid assembly, translation, and GenBank round-trip: passed.
 - Validation gates: Reference coding frame=PASS, SpCas9-NGG candidates=PASS, Guide proximity=PASS, Target disrupted by edit=PASS, Donor retargeting safeguard=PASS, Internal SapI sites after corrections=PASS, Endogenous C-terminal stop omitted from DHA=PASS, Bollen SapI fragment architecture=PASS, Uploaded Addgene #169227 backbone=PASS, Full circular plasmid assembly=PASS, Fusion translation=PASS.
 
 ENVIRONMENT NOTE
-- A live Ensembl request could not be executed inside the build sandbox because outbound DNS was unavailable. The Ensembl REST client and generic design paths are covered by deterministic tests; live use requires internet access.
+- Live Ensembl mouse and human smoke tests passed when network access was enabled. Deterministic stand-ins cover the same generic paths offline.
 
 IMPORTANT
 This is a computational design aid. Independently verify transcript choice, reference sequence, sample genotype, guide activity, all synthesis sequences, and both knock-in junctions before experimental use. C-terminal tagging may alter Tubb5 tail biology; this result was requested as a computational test.
