@@ -56,7 +56,7 @@ def _activity_heuristic(spacer: str) -> str:
         return "favorable basic spacer properties"
     if 30.0 <= gc <= 70.0:
         return "acceptable basic spacer properties"
-    return "review: extreme GC content"
+    return "caution: extreme GC content"
 
 
 
@@ -285,4 +285,6 @@ def _make_candidate(
         activity_heuristic=_activity_heuristic(spacer),
         rationale="; ".join(reasons),
         blocking_mutation_note=blocking_note,
+        final_pam=pam,
+        final_pam_destroyed=pam_destroyed,
     )

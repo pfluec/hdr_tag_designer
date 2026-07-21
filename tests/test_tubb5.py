@@ -23,7 +23,10 @@ from hdr_designer.exports import (
     assembled_plasmid_genbank,
     design_json,
     design_report,
+    genotyping_primers_csv,
+    locus_context_genbank,
     guides_csv,
+    sapi_qc_rows,
 )
 from hdr_designer.sequence import reverse_complement, translate
 
@@ -36,7 +39,9 @@ class Tubb5DesignTest(unittest.TestCase):
     def test_sequence_complete_status(self) -> None:
         self.assertTrue(self.result.sequence_complete)
         self.assertEqual(self.result.status, "SEQUENCE-COMPLETE COMPUTATIONAL DESIGN")
-        self.assertTrue(all(item["status"] in {"PASS", "N/A"} for item in self.result.validations))
+        self.assertTrue(
+            all(item["status"] in {"PASS", "WARNING", "N/A"} for item in self.result.validations)
+        )
 
     def test_selected_guide(self) -> None:
         guide = self.result.top_guide
@@ -53,6 +58,127 @@ class Tubb5DesignTest(unittest.TestCase):
         self.assertEqual(guide.final_longest_retained_segment, 18)
         self.assertFalse(guide.blocking_mutation_required)
         self.assertIn("No extra guide-blocking mutation is required", guide.blocking_mutation_note)
+        self.assertEqual(
+            guide.final_target_with_pam_after_point_mutations,
+            guide.target_with_pam,
+        )
+        self.assertEqual(
+            guide.edited_target_region_display,
+            "GAGGCAGAAGAGGAGGCC[INSERT 729 nt]GG",
+        )
+        self.assertEqual(guide.edited_target_deleted_bases, "TAA")
+        self.assertEqual(len(guide.edited_target_region_5to3), 23 - 3 + 729)
+
+    def test_genotyping_primer_geometry(self) -> None:
+        primer_result = self.result.genotyping_primers
+        self.assertEqual(primer_result["status"], "PASS")
+        self.assertEqual(primer_result["assembly"], "GRCm39")
+        self.assertEqual(set(primer_result["assays"]), {
+            "wild_type_locus",
+            "five_prime_junction",
+            "three_prime_junction",
+        })
+        self.assertTrue(
+            all(assay["status"] == "PASS" for assay in primer_result["assays"].values())
+        )
+
+        five_assay = primer_result["assays"]["five_prime_junction"]
+        five_genomic = five_assay["forward_primer"]
+        five_payload = five_assay["reverse_primer"]
+        self.assertTrue(five_genomic["outside_homology_arm"])
+        self.assertFalse(five_genomic["present_in_donor_plasmid"])
+        self.assertGreaterEqual(
+            five_payload["distance_from_5prime_junction_nt"], 150
+        )
+        self.assertTrue(five_payload["reusable_payload_primer"])
+
+        three_assay = primer_result["assays"]["three_prime_junction"]
+        three_payload = three_assay["forward_primer"]
+        three_genomic = three_assay["reverse_primer"]
+        self.assertGreaterEqual(
+            three_payload["distance_from_3prime_junction_nt"], 150
+        )
+        self.assertTrue(three_genomic["outside_homology_arm"])
+        self.assertFalse(three_genomic["present_in_donor_plasmid"])
+
+        wt_assay = primer_result["assays"]["wild_type_locus"]
+        self.assertTrue(wt_assay["forward_primer"]["outside_homology_arm"])
+        self.assertTrue(wt_assay["reverse_primer"]["outside_homology_arm"])
+        self.assertEqual(
+            wt_assay["expected_edited_product_size_bp"]
+            - wt_assay["expected_wild_type_product_size_bp"],
+            729 - 3,
+        )
+        self.assertEqual(
+            len(wt_assay["expected_wild_type_amplicon_sequence_5to3"]),
+            wt_assay["expected_wild_type_product_size_bp"],
+        )
+        self.assertEqual(
+            len(wt_assay["expected_edited_amplicon_sequence_5to3"]),
+            wt_assay["expected_edited_product_size_bp"],
+        )
+        self.assertIn(
+            self.result.five_prime_arm.gene_oriented_sequence,
+            wt_assay["expected_wild_type_amplicon_sequence_5to3"],
+        )
+        self.assertNotIn(
+            self.result.five_prime_arm.final_gene_oriented_sequence,
+            wt_assay["expected_wild_type_amplicon_sequence_5to3"],
+        )
+        self.assertIn(
+            self.result.five_prime_arm.final_gene_oriented_sequence,
+            wt_assay["expected_edited_amplicon_sequence_5to3"],
+        )
+        plasmid = self.result.cloning_fragments["assembled_plasmid_5to3"]
+        for assay in primer_result["assays"].values():
+            for primer in (assay["forward_primer"], assay["reverse_primer"]):
+                if primer.get("outside_homology_arm"):
+                    self.assertNotIn(primer["sequence_5to3"], plasmid)
+                    self.assertNotIn(reverse_complement(primer["sequence_5to3"]), plasmid)
+
+    def test_annotated_wild_type_and_edited_locus_contexts(self) -> None:
+        contexts = self.result.locus_contexts
+        self.assertEqual(set(contexts), {"orientation", "external_flank_length_nt", "wild_type", "edited"})
+        self.assertEqual(contexts["external_flank_length_nt"], 300)
+        wild_type = contexts["wild_type"]
+        edited = contexts["edited"]
+        self.assertEqual(wild_type["length_nt"], 300 + 600 + 3 + 600 + 300)
+        self.assertEqual(edited["length_nt"], 300 + 600 + 729 + 600 + 300)
+        self.assertEqual(len(wild_type["sequence_5to3"]), wild_type["length_nt"])
+        self.assertEqual(len(edited["sequence_5to3"]), edited["length_nt"])
+        self.assertIn(
+            self.result.five_prime_arm.gene_oriented_sequence,
+            wild_type["sequence_5to3"],
+        )
+        self.assertIn(
+            self.result.five_prime_arm.final_gene_oriented_sequence,
+            edited["sequence_5to3"],
+        )
+        self.assertIn(
+            self.result.donor_payload["payload_sequence_5to3"],
+            edited["sequence_5to3"],
+        )
+        wt_labels = {item["label"] for item in wild_type["features"]}
+        edited_labels = {item["label"] for item in edited["features"]}
+        self.assertIn("5-prime homology arm (UHA), reference", wt_labels)
+        self.assertIn("3-prime homology arm (DHA), reference", wt_labels)
+        self.assertIn("inserted payload", edited_labels)
+        self.assertIn("five_prime_junction reverse primer", edited_labels)
+        self.assertNotIn("five_prime_junction reverse primer", wt_labels)
+
+        for context_name, expected_length in (
+            ("wild_type", wild_type["length_nt"]),
+            ("edited", edited["length_nt"]),
+        ):
+            record = SeqIO.read(StringIO(locus_context_genbank(self.result, context_name)), "genbank")
+            self.assertEqual(len(record.seq), expected_length)
+            self.assertEqual(record.annotations["topology"], "linear")
+            primer_features = [feature for feature in record.features if feature.type == "primer_bind"]
+            self.assertTrue(primer_features)
+            for feature in primer_features:
+                note = feature.qualifiers.get("note", [""])[0]
+                primer_sequence = note.split("5'-", 1)[1].split("-3'", 1)[0]
+                self.assertEqual(str(feature.extract(record.seq)), primer_sequence)
 
     def test_insertion_stop_and_arms(self) -> None:
         self.assertEqual(self.result.insertion_boundary0, 36_145_876)
@@ -87,6 +213,35 @@ class Tubb5DesignTest(unittest.TestCase):
         for motif in SAPI_RECOGNITION_MOTIFS:
             self.assertNotIn(motif, five.final_gene_oriented_sequence)
             self.assertNotIn(motif, self.result.three_prime_arm.final_gene_oriented_sequence)
+
+    def test_sapi_quality_control_summary(self) -> None:
+        rows = sapi_qc_rows(self.result)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(
+            {
+                "Arm": rows[0]["Arm"],
+                "Motif": rows[0]["Motif"],
+                "Arm interval": rows[0]["Arm interval"],
+                "Genomic interval": rows[0]["Genomic interval"],
+                "Status": rows[0]["Status"],
+                "Codon change": rows[0]["Codon change"],
+                "Protein consequence": rows[0]["Protein consequence"],
+            },
+            {
+                "Arm": "5-prime homology arm",
+                "Motif": "GCTCTTC",
+                "Arm interval": "396-402",
+                "Genomic interval": "chr17:36,146,075-36,146,081",
+                "Status": "Resolved",
+                "Codon change": "GAG>GAA",
+                "Protein consequence": "Glu (E)",
+            },
+        )
+        self.assertIn("arm base 396", rows[0]["Mutation(s)"])
+        report = design_report(self.result)
+        self.assertIn("SAPI ARM QUALITY CONTROL", report)
+        self.assertIn("Original SapI sites found in both arms: 1", report)
+        self.assertIn("Original SapI sites resolved: 1", report)
 
     def test_fixed_payload_and_fusion(self) -> None:
         payload = self.result.donor_payload
@@ -226,6 +381,25 @@ class Tubb5DesignTest(unittest.TestCase):
             tails["DHA_reverse_5prime_tail"],
             "AACGCTCTTCGATTCCTTAGGCCTCCTCTTCTGCCTC",
         )
+        cloning = self.result.cloning_primers
+        self.assertEqual(set(cloning["primers"]), {
+            "UHA_forward", "UHA_reverse", "DHA_forward", "DHA_reverse"
+        })
+        for primer in cloning["primers"].values():
+            self.assertEqual(
+                primer["full_sequence_5to3"],
+                primer["tail_sequence_5to3"] + primer["annealing_sequence_5to3"],
+            )
+            self.assertGreaterEqual(primer["annealing_length_nt"], 18)
+        self.assertTrue(
+            cloning["primers"]["UHA_forward"]["annealing_sequence_5to3"]
+            == self.result.five_prime_arm.final_gene_oriented_sequence[:20]
+        )
+        self.assertEqual(
+            cloning["primers"]["UHA_reverse"]["annealing_sequence_5to3"],
+            reverse_complement(self.result.five_prime_arm.final_gene_oriented_sequence[-20:]),
+        )
+        self.assertIn("internal mutation", " ".join(cloning["warnings"]))
 
     def test_exports(self) -> None:
         report = design_report(self.result)
@@ -235,14 +409,22 @@ class Tubb5DesignTest(unittest.TestCase):
         self.assertIn("uha_synthesis_fragment_5to3", report)
         self.assertIn("Simulated final plasmid: 3950 bp", report)
         self.assertIn("GAGGCAGAAGAGGAGGCCTA", guides_csv(self.result))
+        primer_csv = genotyping_primers_csv(self.result)
+        self.assertIn("five_prime_junction_forward", primer_csv)
+        self.assertIn("three_prime_junction_reverse", primer_csv)
+        self.assertIn("GENOTYPING PCR ASSAYS", report)
         fasta = arms_fasta(self.result)
         self.assertIn(">Tubb5_5_prime_homology_arm_gene_oriented_FINAL", fasta)
         self.assertIn(">Tubb5_UHA_synthesis_fragment_FINAL", fasta)
         self.assertIn("assembled_circular_plasmid", fasta)
+        self.assertIn("five_prime_junction_expected_amplicon", fasta)
+        self.assertIn("wild_type_locus_with_300bp_external_flanks", fasta)
+        self.assertIn("edited_locus_with_300bp_external_flanks", fasta)
         payload = json.loads(design_json(self.result))
         self.assertTrue(payload["sequence_complete"])
         self.assertEqual(payload["guides"][0]["final_longest_retained_segment"], 18)
         self.assertFalse(payload["guides"][0]["blocking_mutation_required"])
+        self.assertEqual(payload["genotyping_primers"]["status"], "PASS")
 
 
 if __name__ == "__main__":

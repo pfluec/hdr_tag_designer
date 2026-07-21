@@ -1,17 +1,39 @@
-HDR TAG DESIGNER v0.3.0 - VALIDATION RECORD
+HDR TAG DESIGNER v0.5.1 - VALIDATION RECORD
 =======================================================
 
-Validation date: 2026-07-20
-Scope: fixed Addgene #169227 C-terminal mNeonGreen prototype; custom backbones/tags deferred.
+Validation date: 2026-07-21
+Scope: complete Addgene #169226 N-terminal and #169227 C-terminal workflows, automatic coding/non-coding SapI domestication, generic synonymous guide blocking, and structurally validated custom SnapGene backbones.
 
 AUTOMATED TESTS
 -------------------------------------------------------
-PASS: 15/15 Python unit/integration tests.
+PASS: 33/33 Python unit/integration tests.
 PASS: Streamlit default Tubb5 workflow via streamlit.testing.v1.AppTest.
 PASS: mocked live-design code paths for mouse GRCm39 and human GRCh38.
-PASS: N-terminal code path is explicitly limited to a locus-design preview with this C-terminal backbone.
+PASS: N-terminal plus- and minus-strand paths produce complete synthesis fragments, fusion translations, and circular plasmids.
+PASS: Custom `.dna` classification and full N/C assembly paths pass using both Addgene files as deterministic fixtures.
 PASS: headless Streamlit health endpoint returned ok.
 PASS: Python bytecode compilation for app, package, scripts, and tests.
+
+AUTOMATIC SYNONYMOUS MUTATIONS
+-------------------------------------------------------
+PASS: Nearest-guide priority is retained when the closer guide needs a synonymous blocking mutation.
+PASS: Coding PAM destruction (GGG -> GGA) releases a sequence-complete donor after full-CDS translation validation.
+PASS: Synonymous seed mutation is selected when the PAM cannot be changed, reducing the retained segment to <=14 nt.
+PASS: Coding SapI sites, including multiple sites and reverse-strand loci, are domesticated without changing translation or creating a new SapI site.
+PASS: Eligible non-coding SapI sites are removed by deterministic one-base substitutions; coding bases, the first/last three exonic bases, six-base intronic splice flanks, new SapI sites, and longer problematic homopolymers are excluded.
+PASS: Non-coding guide targets and SapI sites without an eligible safe solution remain blocked.
+PASS: Mutation metadata is propagated into final arms, edited CDS, assembled plasmid, TXT, JSON, FASTA, and GenBank output.
+PASS: Exonic bases within 3 nt of splice boundaries and changes that lengthen a >=6-nt homopolymer are excluded.
+PASS: Streamlit and TXT outputs show total/per-arm SapI counts and site-level mutation details for resolved and unresolved sites.
+
+ENSEMBL RESILIENCE
+-------------------------------------------------------
+PASS: HTTP 429, HTTP 5xx, and connection failures use bounded retries.
+PASS: User-facing failures omit returned HTML bodies.
+PASS: Explicit transcript IDs are checked against the selected parent gene and protein-coding biotype.
+PASS: Live Ensembl smoke test resolved ENSMUST00000001566.11 and produced the expected sequence-complete Tubb5 design; the offline fixture remains the reproducible .10 snapshot.
+PASS: Live human TUBB5 smoke test selected ENST00000327892.13 and produced a sequence-complete C-terminal design with a 1-bp guide distance.
+PASS: Live mouse Actb N-terminal regression selected ENSMUST00000100497.11 and automatically changed the intronic UHA SapI site at chr5:142,891,878-142,891,884 (UHA base 158, C>A), producing a sequence-complete 3947-bp plasmid with zero residual SapI sites.
 
 UPLOADED BACKBONE
 -------------------------------------------------------
@@ -23,6 +45,17 @@ SapI sites: 4
 SapI overhang order: TAC -> GGC -> TGA -> AAT
 Payload reconstructed from .dna: 729 bp
 Payload equals Bollen supplementary S2 sequence: True
+
+N-TERMINAL BACKBONE
+-------------------------------------------------------
+File: addgene-169226.dna
+SHA-256: 75d9d25b4dac8083c401ee5ac76b080a5f62e42d23357a81b4ac33e84a434177
+Length/topology: 2765 bp / circular
+SapI sites/overhang order: 4 / TAC -> GTG -> AGC -> AAT
+Payload reconstructed from .dna: 726 bp (mNeonGreen-GGGGSAS, no stop)
+Standard 600-bp-arm donor/final plasmid: 1972 bp / 3947 bp
+Residual SapI sites in simulated plasmid: 0
+Plus- and minus-strand sequence-complete tests: PASS
 
 TUBB5 COMPUTATIONAL TEST
 -------------------------------------------------------
@@ -41,16 +74,18 @@ GenBank round trip: PASS (3950 bp, 19 annotated features, topology circular).
 
 GENERATED OUTPUTS
 -------------------------------------------------------
-outputs/tubb5_test/Tubb5_C_terminal_design_report.txt | 28864 bytes | SHA-256 68ac68a315ab9fb6b586d67d7e1a951aa17da74bb1bdfa0ad77bee39018e2a55
-outputs/tubb5_test/Tubb5_guides.csv | 6179 bytes | SHA-256 1db29e8b5d516c6f4532913d602cd263114d26b9a6c4c498b54c7ed2453e8de8
-outputs/tubb5_test/Tubb5_homology_arms.fasta | 13915 bytes | SHA-256 6bb81f8ebe0bfb688a76d8561568205548412fc1c511f4549235fead5b5b910f
-outputs/tubb5_test/Tubb5_design.json | 49362 bytes | SHA-256 df9eb0239aba15b5270c3c3fa2a2c739456ca8ddff8f63fc1d0db391f0604d30
-outputs/tubb5_test/Tubb5_C_terminal_mNeonGreen_assembled_plasmid.gb | 9531 bytes | SHA-256 6a3790236f571b8ae847eec250a59389b25e4eadc50f4f0d887d9cc101d0829e
+outputs/tubb5_test/Tubb5_C_terminal_design_report.txt | 31723 bytes | SHA-256 9349153a75718c7b44bf73510e95139ac5e121b550cd06493e60bc0379afd8ae
+outputs/tubb5_test/Tubb5_guides.csv | 9311 bytes | SHA-256 6b86497c840a1ad43011f658cd8f3fa5b677ff7bd3018765d6eaf27359b40a3d
+outputs/tubb5_test/Tubb5_homology_arms.fasta | 13902 bytes | SHA-256 27b254e8f5ea2fabe393725bbf7c25845d942605e23868bee2a6cf6a9cb72a44
+outputs/tubb5_test/Tubb5_design.json | 54235 bytes | SHA-256 bf0e5ac044fbee0bb889cfdda776c9e6de0bc240e87a6a0b620648997541930b
+outputs/tubb5_test/Tubb5_C_terminal_mNeonGreen_assembled_plasmid.gb | 9531 bytes | SHA-256 c4decf1c7f421fb065df726bb5c0d0369d6869876d7710b4ed638d2b7a99a692
 
 KNOWN LIMITATIONS
 -------------------------------------------------------
 No off-target search or validated activity score is performed.
 Reference sequence only; no strain/cell-line variants are considered.
-Live Ensembl network calls were not executed inside the isolated build container; the same code paths were tested with deterministic Ensembl stand-ins for both species.
-Only the bundled Tubb5 test automatically applies a validated synonymous SapI correction. Other loci with internal SapI sites or an intact retargetable guide are flagged for manual review.
+Live Ensembl mouse and human smoke tests passed on 2026-07-21; deterministic stand-ins retain offline coverage for both species.
+Coding SapI changes require an identical reconstructed CDS translation. Eligible non-coding SapI changes are automatic; coding bases, the first/last three exonic bases, and six intronic splice-flank bases are excluded from that fallback. Non-coding guide-blocking, protected splice-edge changes, and cases without a safe candidate remain blocked.
+Codon-usage optimization and comprehensive cryptic-splice/regulatory-motif prediction are not yet implemented.
+Custom uploads currently accept SnapGene `.dna` only, require the exact supported SapI/linker architecture, and require cassette coordinates not to cross the file origin. Payload-only FASTA and arbitrary adapter/linker definitions are not yet implemented.
 The result is a computational design and requires independent sequence, transcript, plasmid, and biological validation before experimental use.

@@ -11,7 +11,7 @@ TUBB5_TRANSCRIPT_ID = "ENSMUST00000001566"
 # The bundled sequence is the UCSC/GENCODE VM snapshot carrying transcript version .10.
 # Online mode resolves the current Ensembl version of the same stable transcript.
 TUBB5_FIXTURE_VERSION = "10"
-TUBB5_CURRENT_CANONICAL_VERSION_AT_BUILD = "10"
+TUBB5_CURRENT_CANONICAL_VERSION_AT_BUILD = "11"
 TUBB5_CHROMOSOME = "17"
 TUBB5_STRAND = -1
 TUBB5_CDNA_LENGTH = 2649

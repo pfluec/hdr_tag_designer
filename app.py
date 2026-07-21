@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from pathlib import Path
+import tempfile
 from typing import Any
 
 import pandas as pd
 import streamlit as st
 
 from hdr_designer.design import DesignError, design_online, design_tubb5_fixture
+from hdr_designer.backbones import backbone_for_terminus, infer_custom_backbone_definition
 from hdr_designer.ensembl import EnsemblError, SPECIES
 from hdr_designer.exports import (
     arms_fasta,
@@ -15,26 +18,33 @@ from hdr_designer.exports import (
     design_report,
     guide_rows,
     guides_csv,
+    genotyping_primers_csv,
+    locus_context_genbank,
+    sapi_qc_rows,
 )
 from hdr_designer.models import DesignResult, HomologyArm
+from hdr_designer.snapgene import SnapGeneError
 
-APP_VERSION = "0.3.1"
+APP_VERSION = "0.6.0"
 
 
 def _download_buttons(result: DesignResult) -> None:
     stem = f"{result.gene_symbol}_{result.terminus.lower().replace('-', '_').replace(' ', '_')}"
-    cols = st.columns(5)
+    cols = st.columns(6)
     cols[0].download_button(
         "Full report (.txt)", design_report(result), f"{stem}_design_report.txt", "text/plain",
         width="stretch",
+        on_click="ignore",
     )
     cols[1].download_button(
         "Guides (.csv)", guides_csv(result), f"{stem}_guides.csv", "text/csv",
         width="stretch",
+        on_click="ignore",
     )
     cols[2].download_button(
         "Sequences (.fasta)", arms_fasta(result), f"{stem}_sequences.fasta", "text/plain",
         width="stretch",
+        on_click="ignore",
     )
     cols[3].download_button(
         "Assembled plasmid (.gb)",
@@ -43,10 +53,39 @@ def _download_buttons(result: DesignResult) -> None:
         "text/plain",
         width="stretch",
         disabled=not result.sequence_complete,
+        on_click="ignore",
     )
     cols[4].download_button(
+        "Genotyping primers (.csv)",
+        genotyping_primers_csv(result),
+        f"{stem}_genotyping_primers.csv",
+        "text/csv",
+        width="stretch",
+        on_click="ignore",
+    )
+    cols[5].download_button(
         "Full data (.json)", design_json(result), f"{stem}_design.json", "application/json",
         width="stretch",
+        on_click="ignore",
+    )
+    context_cols = st.columns(2)
+    context_cols[0].download_button(
+        "Annotated WT locus (.gb)",
+        locus_context_genbank(result, "wild_type") if result.locus_contexts else "",
+        f"{stem}_wild_type_locus_context.gb",
+        "text/plain",
+        width="stretch",
+        disabled=not bool(result.locus_contexts),
+        on_click="ignore",
+    )
+    context_cols[1].download_button(
+        "Annotated edited locus (.gb)",
+        locus_context_genbank(result, "edited") if result.locus_contexts else "",
+        f"{stem}_edited_locus_context.gb",
+        "text/plain",
+        width="stretch",
+        disabled=not bool(result.locus_contexts),
+        on_click="ignore",
     )
 
 
@@ -60,14 +99,14 @@ def _show_arm(arm: HomologyArm) -> None:
                 "GC (%)": arm.gc_percent,
                 "Raw SapI sites": len(arm.sapi_sites),
                 "Final SapI sites": len(arm.final_sapi_sites),
-                "Silent changes": len(arm.mutations),
+                "Verified automatic changes": len(arm.mutations),
             }]
         ),
         hide_index=True,
         width="stretch",
     )
     if arm.mutations:
-        st.markdown("**Silent changes in final arm**")
+        st.markdown("**Verified automatic changes in final arm**")
         st.dataframe(
             pd.DataFrame([asdict(mutation) for mutation in arm.mutations]),
             hide_index=True,
@@ -80,6 +119,50 @@ def _show_arm(arm: HomologyArm) -> None:
             st.code(arm.final_gene_oriented_sequence, language=None)
     with st.expander("Chromosome-forward reference sequence"):
         st.code(arm.chromosome_forward_sequence, language=None)
+
+
+def _show_sapi_quality_control(result: DesignResult) -> None:
+    st.markdown("### SapI arm quality control")
+    arms = (result.five_prime_arm, result.three_prime_arm)
+    rows = sapi_qc_rows(result)
+    found = sum(len(arm.sapi_sites) for arm in arms)
+    remaining = sum(len(arm.final_sapi_sites) for arm in arms)
+    resolved = sum(row["Status"] == "Resolved" for row in rows)
+    cols = st.columns(3)
+    cols[0].metric("Arm SapI sites found", found)
+    cols[1].metric("Arm SapI sites resolved", resolved)
+    cols[2].metric("Arm SapI sites remaining", remaining)
+
+    arm_rows = []
+    for arm in arms:
+        arm_resolved = sum(
+            row["Arm"] == arm.name and row["Status"] == "Resolved"
+            for row in rows
+        )
+        arm_rows.append(
+            {
+                "Arm": arm.name,
+                "Sites found": len(arm.sapi_sites),
+                "Sites resolved": arm_resolved,
+                "Sites remaining": len(arm.final_sapi_sites),
+            }
+        )
+    st.dataframe(pd.DataFrame(arm_rows), hide_index=True, width="stretch")
+
+    if found == 0 and remaining == 0:
+        st.success("No internal SapI recognition site was found in either homology arm.")
+    elif remaining == 0:
+        st.success(
+            f"All {found} internal SapI site(s) were removed from the final arm sequences."
+        )
+    else:
+        st.warning(
+            f"{remaining} SapI site(s) remain in the final arms; order-ready cloning "
+            "fragments are withheld because automatic resolution failed."
+        )
+    if rows:
+        st.markdown("#### Site-by-site resolution")
+        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
 
 
 def _show_result(result: DesignResult) -> None:
@@ -96,7 +179,12 @@ def _show_result(result: DesignResult) -> None:
     cols[2].metric("Guides", len(result.guides))
     cols[3].metric("Arms", f"{result.homology_arm_length} bp")
     cols[4].metric("Native protein", f"{result.protein_length_aa} aa")
-    cols[5].metric("Fusion", f"{result.fusion_protein_length_aa or 0} aa")
+    cols[5].metric(
+        "Fusion",
+        f"{result.fusion_protein_length_aa} aa"
+        if result.fusion_protein_length_aa
+        else "not asserted",
+    )
     st.caption(
         f"chr{result.chromosome}, gene strand {result.gene_strand}; insertion boundary "
         f"between 1-based bases {result.insertion_boundary0:,} and {result.insertion_boundary0 + 1:,}."
@@ -113,15 +201,61 @@ def _show_result(result: DesignResult) -> None:
         cols[1].metric("PAM", guide.pam)
         cols[2].metric("PAM strand", guide.chromosome_strand)
         cols[3].metric("Nick distance", f"{guide.distance_to_insertion} bp")
-        cols[4].metric("PAM disrupted", "yes" if guide.pam_destroyed else "no")
+        cols[4].metric(
+            "Final PAM",
+            f"{guide.final_pam or guide.pam} "
+            f"({'disrupted' if guide.final_pam_destroyed else 'retained'})",
+        )
         cols[5].metric("Retained segment", f"{guide.final_longest_retained_segment} nt")
         st.code(f"5'-{guide.spacer}-{guide.pam}-3'", language=None)
         st.write(guide.rationale)
         if guide.blocking_mutation_note:
             st.info(guide.blocking_mutation_note)
+        st.markdown("#### Reference versus edited guide-binding region")
+        st.code(
+            "Reference target + PAM  5'-"
+            f"{guide.target_with_pam}-3'\n"
+            "After donor point edits 5'-"
+            f"{guide.final_target_with_pam_after_point_mutations or '(not reconstructed)'}-3'\n"
+            "Actual edited region    5'-"
+            f"{guide.edited_target_region_display or '(not reconstructed)'}-3'",
+            language=None,
+        )
+        changed_positions = [
+            {
+                "Target base": index0 + 1,
+                "Reference": reference,
+                "Final donor": alternate,
+                "Region": "PAM" if index0 >= 20 else "protospacer",
+            }
+            for index0, (reference, alternate) in enumerate(
+                zip(
+                    guide.target_with_pam,
+                    guide.final_target_with_pam_after_point_mutations,
+                )
+            )
+            if reference != alternate
+        ]
+        if changed_positions:
+            st.dataframe(pd.DataFrame(changed_positions), hide_index=True, width="stretch")
+        if guide.edited_target_insert_length_nt:
+            st.caption(
+                f"The actual donor allele inserts {guide.edited_target_insert_length_nt} nt "
+                f"within this target context and removes "
+                f"{guide.edited_target_deleted_bases or 'no target-region bases'}."
+            )
+            with st.expander("Full edited guide-region sequence"):
+                st.code(guide.edited_target_region_5to3, language=None)
+        elif guide.edited_target_region_5to3:
+            st.caption(
+                "The insertion does not split this 23-nt target; the displayed actual "
+                "edited region contains substitutions/deletions only."
+            )
         st.caption(result.guide_scoring_note)
         with st.expander("All ranked candidates"):
             st.dataframe(pd.DataFrame(guide_rows(result)), hide_index=True, width="stretch")
+
+    _show_sapi_quality_control(result)
 
     st.markdown("### Homology arms")
     tab_uha, tab_dha = st.tabs(["5-prime arm (UHA)", "3-prime arm (DHA)"])
@@ -131,12 +265,22 @@ def _show_result(result: DesignResult) -> None:
         _show_arm(result.three_prime_arm)
 
     if result.donor_payload:
-        st.markdown("### Fixed donor payload")
+        st.markdown("### Donor payload")
+        payload_warning = str(result.donor_payload.get("payload_warning", ""))
+        if payload_warning:
+            st.warning(payload_warning)
         payload_cols = st.columns(4)
-        payload_cols[0].metric("Linker", str(result.donor_payload.get("linker_peptide", "")))
-        payload_cols[1].metric("mNeonGreen", f"{result.donor_payload.get('tag_length_aa', 0)} aa")
+        if result.donor_payload.get("fusion_compatible"):
+            payload_cols[0].metric("Linker", str(result.donor_payload.get("linker_peptide", "")))
+            payload_cols[1].metric(
+                str(result.donor_payload.get("tag_name", "Tag")),
+                f"{result.donor_payload.get('tag_length_aa', 0)} aa",
+            )
+        else:
+            payload_cols[0].metric("Interpretation", "complex cassette")
+            payload_cols[1].metric("Single fusion", "not asserted")
         payload_cols[2].metric("Payload coding", f"{result.donor_payload.get('payload_coding_length_nt', 0)} nt")
-        payload_cols[3].metric("Stop", str(result.donor_payload.get("stop_codon", "")))
+        payload_cols[3].metric("Stop", str(result.donor_payload.get("stop_codon", "")) or "not assigned")
         with st.expander("Payload sequence"):
             st.code(str(result.donor_payload.get("payload_sequence_5to3", "")), language=None)
 
@@ -175,7 +319,7 @@ def _show_result(result: DesignResult) -> None:
             cols[1].metric("Input SapI sites", str(backbone.get("sapi_site_count")))
             cols[2].metric("Final plasmid", f"{result.cloning_fragments.get('assembled_plasmid_length_nt')} bp")
             cols[3].metric("Final SapI sites", str(result.cloning_fragments.get("assembled_plasmid_sapi_site_count")))
-            cols[4].metric("Payload = S2", "yes" if backbone.get("payload_matches_bollen_s2") else "no")
+            cols[4].metric("Payload verified", "yes" if backbone.get("payload_sequence_verified") else "no")
             st.caption(
                 f"Parsed {backbone.get('snapgene_file')} | SHA-256 {backbone.get('snapgene_sha256')}"
             )
@@ -194,16 +338,126 @@ def _show_result(result: DesignResult) -> None:
             with st.expander(f"Full assembled circular plasmid sequence ({len(str(plasmid))} bp)"):
                 st.code(str(plasmid), language=None)
 
-    if result.primer_tail_templates:
-        st.markdown("### PCR-primer 5-prime tail templates")
-        st.dataframe(
-            pd.DataFrame(
-                [{"Template": key, "Sequence / note": value}
-                 for key, value in result.primer_tail_templates.items()]
-            ),
-            hide_index=True,
-            width="stretch",
+    if result.cloning_primers:
+        st.markdown("### Homology-arm cloning primers (SapI / Golden Gate)")
+        st.caption(
+            "Blue = architecture-specific 5-prime tail; green = genomic annealing region. "
+            "Melting temperature and GC percentage refer only to the annealing region."
         )
+        if result.cloning_primers.get("status") == "WARNING":
+            for warning in result.cloning_primers.get("warnings", []):
+                st.warning(str(warning))
+        for primer in result.cloning_primers.get("primers", {}).values():
+            st.markdown(f"**{primer.get('name')}**")
+            st.markdown(
+                "<code>5′-"
+                f"<span style='color:#3b82f6'>{primer.get('tail_sequence_5to3')}</span>"
+                f"<span style='color:#16a34a'>{primer.get('annealing_sequence_5to3')}</span>"
+                "-3′</code>",
+                unsafe_allow_html=True,
+            )
+            st.caption(
+                f"Annealing: {primer.get('annealing_length_nt')} nt, "
+                f"Tm {primer.get('annealing_tm_c')} C, "
+                f"GC {primer.get('annealing_gc_percent')}%, "
+                f"arm bases {primer.get('arm_binding_interval_1based')}."
+            )
+            with st.expander("Copy complete primer sequence"):
+                st.code(str(primer.get("full_sequence_5to3", "")), language=None)
+
+    if result.genotyping_primers:
+        st.markdown("### Genotyping PCR primers")
+        primer_result = result.genotyping_primers
+        if primer_result.get("status") == "PASS":
+            st.success("All three genotyping assays have a primer pair.")
+        else:
+            st.warning("One or more genotyping assays require manual primer design.")
+        st.caption(
+            f"{primer_result.get('ruleset')} | {primer_result.get('assembly')} "
+            f"chr{primer_result.get('chromosome')} | payload primers are at least "
+            f"{primer_result.get('payload_junction_standoff_nt')} bp from their tested junction."
+        )
+        assay_labels = {
+            "wild_type_locus": "WT / non-edited locus",
+            "five_prime_junction": "5-prime insertion junction",
+            "three_prime_junction": "3-prime insertion junction",
+        }
+        for assay_name in ("wild_type_locus", "five_prime_junction", "three_prime_junction"):
+            assay = primer_result.get("assays", {}).get(assay_name)
+            if not assay:
+                continue
+            st.markdown(f"#### {assay_labels[assay_name]}")
+            if assay.get("status") != "PASS":
+                st.warning(str(assay.get("reason", "No valid primer pair found.")))
+                continue
+            product_cols = st.columns(3)
+            product_cols[0].metric("Expected product", f"{assay.get('product_size_bp')} bp")
+            product_cols[1].metric(
+                "WT product",
+                f"{assay.get('expected_wild_type_product_size_bp')} bp"
+                if assay.get("expected_wild_type_product_size_bp")
+                else "not expected",
+            )
+            product_cols[2].metric(
+                "Edited product",
+                f"{assay.get('expected_edited_product_size_bp')} bp"
+                if assay.get("expected_edited_product_size_bp")
+                else f"{assay.get('product_size_bp')} bp",
+            )
+            primer_rows = []
+            for role in ("forward_primer", "reverse_primer"):
+                primer = assay[role]
+                primer_rows.append(
+                    {
+                        "Role": role.replace("_primer", "").title(),
+                        "Sequence (5'->3')": primer.get("sequence_5to3"),
+                        "Source": primer.get("source"),
+                        "Reference strand": primer.get("reference_sequence_strand"),
+                        "Location": primer.get("genomic_interval_1based")
+                        or primer.get("payload_interval_1based"),
+                        "Length": primer.get("length_nt"),
+                        "Tm (C)": primer.get("tm_c"),
+                        "GC (%)": primer.get("gc_percent"),
+                        "Outside HA": primer.get("outside_homology_arm", False),
+                        "Reusable payload primer": primer.get("source") == "payload",
+                    }
+                )
+            st.dataframe(pd.DataFrame(primer_rows), hide_index=True, width="stretch")
+            with st.expander(f"Expected {assay_name} amplicon sequence"):
+                st.code(str(assay.get("amplicon_sequence_5to3", "")), language=None)
+                if assay.get("expected_edited_amplicon_sequence_5to3"):
+                    st.caption("Expected edited-allele amplicon from the same external WT pair")
+                    st.code(
+                        str(assay.get("expected_edited_amplicon_sequence_5to3")),
+                        language=None,
+                    )
+        for warning in primer_result.get("warnings", []):
+            st.caption(f"Warning: {warning}")
+
+    if result.locus_contexts:
+        st.markdown("### WT and edited locus sequence context")
+        st.caption(
+            "Both records are gene-oriented 5-prime to 3-prime and extend 300 bp beyond "
+            "each homology arm. Primer-binding annotations use the selected genotyping pairs."
+        )
+        wt_tab, edited_tab = st.tabs(["Unedited wild type", "Edited allele"])
+        for tab, context_name in ((wt_tab, "wild_type"), (edited_tab, "edited")):
+            context = result.locus_contexts[context_name]
+            with tab:
+                st.metric("Linear context length", f"{context.get('length_nt')} bp")
+                feature_rows = [
+                    {
+                        "Annotation": item.get("label"),
+                        "Type": item.get("type"),
+                        "Interval (1-based)": f"{int(item.get('start0', 0)) + 1}-{item.get('end0')}",
+                        "Strand": "+" if item.get("strand", 1) == 1 else "-",
+                        "Note": item.get("note", ""),
+                    }
+                    for item in context.get("features", [])
+                ]
+                st.dataframe(pd.DataFrame(feature_rows), hide_index=True, width="stretch")
+                with st.expander("Full gene-oriented locus sequence"):
+                    st.code(str(context.get("sequence_5to3", "")), language=None)
 
     st.markdown("### Export")
     _download_buttons(result)
@@ -232,6 +486,9 @@ def _show_result(result: DesignResult) -> None:
             preview["donor_payload"]["payload_sequence_5to3"] = "[sequence in downloads]"
             preview["donor_payload"]["tag_coding_sequence"] = "[sequence in downloads]"
             preview["donor_payload"]["payload_coding_sequence"] = "[sequence in downloads]"
+        for context_name in ("wild_type", "edited"):
+            if context_name in preview.get("locus_contexts", {}):
+                preview["locus_contexts"][context_name]["sequence_5to3"] = "[sequence in downloads]"
         st.json(preview)
 
 
@@ -240,7 +497,7 @@ def main() -> None:
     st.title("HDR Tag Designer")
     st.caption(
         f"Bollen-style ITPN gene-tagging prototype using SpCas9 D10A. Version {APP_VERSION} "
-        "verifies the uploaded Addgene #169227 backbone and reconstructs the full circular donor plasmid."
+        "adds complex custom payloads, edited guide context, genotyping primers, and annotated locus records."
     )
     st.info(
         "Species is the first design choice. The bundled Tubb5 test is reproducible offline; "
@@ -255,28 +512,32 @@ def main() -> None:
             format_func=lambda key: f"{SPECIES[key].label} - {SPECIES[key].assembly}",
             index=0,
         )
+        terminus = st.selectbox("2. Tagging terminus", ["C-terminal", "N-terminal"], index=0)
         if species_key == "mouse":
+            if not terminus.startswith("C"):
+                st.session_state["use_tubb5_fixture"] = False
             use_fixture = st.checkbox(
                 "Use bundled Tubb5 validation fixture",
-                value=True,
+                value=terminus.startswith("C"),
                 key="use_tubb5_fixture",
+                disabled=not terminus.startswith("C"),
                 help=(
                     "Offline C-terminal Tubb5-201 test with 600-bp arms. "
                     "The bundled transcript is ENSMUST00000001566.10."
                 ),
-            )
+            ) and terminus.startswith("C")
         else:
             use_fixture = False
             st.caption("The bundled offline fixture is mouse-only; human designs use live Ensembl.")
 
         gene = st.text_input(
-            "2. Gene symbol or Ensembl gene ID",
+            "3. Gene symbol or Ensembl gene ID",
             value="Tubb5" if species_key == "mouse" else "TUBB5",
             key=f"gene_{species_key}",
             disabled=use_fixture,
         )
         transcript_id = st.text_input(
-            "3. Transcript ID (optional)",
+            "4. Transcript ID (optional)",
             value="ENSMUST00000001566.10" if use_fixture else "",
             key=f"transcript_{species_key}_{'fixture' if use_fixture else 'live'}",
             disabled=use_fixture,
@@ -286,12 +547,29 @@ def main() -> None:
                 else "Blank uses the live Ensembl canonical transcript."
             ),
         )
-        terminus = st.selectbox("4. Tagging terminus", ["C-terminal", "N-terminal"], index=0)
-        st.text_input(
+        selected_backbone = backbone_for_terminus(terminus)
+        backbone_mode = st.radio(
             "5. Donor backbone",
-            value="TVBB C-term-mNeongreen (Addgene #169227)",
-            disabled=True,
+            ["Verified built-in", "Upload custom .dna"],
+            horizontal=True,
         )
+        custom_backbone_upload = None
+        if backbone_mode == "Verified built-in":
+            st.text_input(
+                "Selected backbone",
+                value=f"{selected_backbone.name} (Addgene #{selected_backbone.addgene_id})",
+                disabled=True,
+            )
+        else:
+            custom_backbone_upload = st.file_uploader(
+                "Custom SnapGene backbone",
+                type=["dna"],
+                help=(
+                    "Must be circular and retain exactly four SapI sites in the Bollen "
+                    "N- or C-terminal overhang order. Multi-ORF and non-frame payloads "
+                    "are accepted with an explicit interpretation warning."
+                ),
+            )
         arm_length = st.number_input(
             "6. Homology arm length (bp)", 100, 2000, 600, 50
         )
@@ -303,16 +581,45 @@ def main() -> None:
     st.markdown("#### Scope of this version")
     st.write(
         "ITPN / SpCas9 D10A; mouse GRCm39 or human GRCh38; reference sequence only; "
-        "fixed Addgene #169227 C-terminal mNeonGreen payload; custom backbones deferred."
+        "verified Addgene #169226 N-terminal and #169227 C-terminal mNeonGreen backbones, "
+        "plus structurally validated custom SnapGene backbones; "
+        "automatic synonymous guide blocking and automatic coding/non-coding SapI "
+        "domestication, with protected or otherwise unsafe cases blocked."
     )
 
     if not run:
-        st.write("Use the default settings and click **Design locus** to run the Tubb5 test.")
+        latest_design = st.session_state.get("latest_design")
+        if isinstance(latest_design, DesignResult):
+            st.info(
+                "Showing the latest completed design. Click **Design locus** to recompute "
+                "after changing inputs."
+            )
+            _show_result(latest_design)
+        else:
+            st.write("Use the default settings and click **Design locus** to run the Tubb5 test.")
         return
 
+    temporary_backbone_path: Path | None = None
     try:
         with st.spinner("Building and validating design..."):
+            design_backbone = selected_backbone
+            if backbone_mode == "Upload custom .dna":
+                if custom_backbone_upload is None:
+                    raise DesignError("Upload a custom SnapGene .dna backbone before designing.")
+                with tempfile.NamedTemporaryFile(
+                    prefix="hdr_tag_custom_", suffix=".dna", delete=False
+                ) as handle:
+                    handle.write(custom_backbone_upload.getvalue())
+                    temporary_backbone_path = Path(handle.name)
+                design_backbone = infer_custom_backbone_definition(temporary_backbone_path)
+                if design_backbone.terminus != terminus:
+                    raise DesignError(
+                        f"The uploaded SapI architecture is {design_backbone.terminus}, "
+                        f"but {terminus} tagging was selected."
+                    )
             if use_fixture:
+                if backbone_mode != "Verified built-in":
+                    raise DesignError("The bundled Tubb5 fixture uses the verified built-in backbone.")
                 if species_key != "mouse" or gene.strip().casefold() != "tubb5":
                     raise DesignError("The bundled fixture is fixed to mouse Tubb5.")
                 if not terminus.startswith("C") or int(arm_length) != 600:
@@ -328,10 +635,14 @@ def main() -> None:
                     terminus=terminus,
                     arm_length=int(arm_length),
                     guide_window=int(guide_window),
+                    backbone_definition=design_backbone,
                 )
-    except (DesignError, EnsemblError, ValueError) as exc:
+    except (DesignError, EnsemblError, SnapGeneError, ValueError) as exc:
         st.error(str(exc))
         st.stop()
+    finally:
+        if temporary_backbone_path is not None and temporary_backbone_path.exists():
+            temporary_backbone_path.unlink()
 
     st.session_state["latest_design"] = result
     _show_result(result)
