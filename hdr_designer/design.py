@@ -49,6 +49,7 @@ class DesignError(RuntimeError):
 
 
 SPLICE_EDGE_EXCLUSION_NT = 3
+NONCODING_SPLICE_FLANK_EXCLUSION_NT = 6
 
 
 @dataclass(frozen=True)
@@ -200,7 +201,7 @@ def _synonymous_plans_for_region(
         if len(original_codon) != 3:
             continue
         amino_acid = CODON_TABLE.get(original_codon)
-        # Do not rewrite a terminal stop automatically; stop-context changes require review.
+        # Do not rewrite a terminal stop automatically; stop-context changes require manual design.
         if not amino_acid or amino_acid == "*":
             continue
         for altered_codon, altered_amino_acid in sorted(CODON_TABLE.items()):
@@ -259,6 +260,23 @@ def _splice_edge_exclusion_positions0(record: TranscriptRecord) -> set[int]:
     return protected
 
 
+def _noncoding_sapi_exclusion_positions0(record: TranscriptRecord) -> set[int]:
+    protected = _splice_edge_exclusion_positions0(record)
+    for exon in record.exons:
+        start0 = exon.start1 - 1
+        end0 = exon.end1
+        protected.update(
+            range(
+                max(0, start0 - NONCODING_SPLICE_FLANK_EXCLUSION_NT),
+                start0,
+            )
+        )
+        protected.update(
+            range(end0, end0 + NONCODING_SPLICE_FLANK_EXCLUSION_NT)
+        )
+    return protected
+
+
 def _longest_homopolymer(sequence: str) -> int:
     longest = 0
     current = 0
@@ -274,6 +292,15 @@ def _creates_longer_homopolymer(before: str, after: str) -> bool:
     before_longest = _longest_homopolymer(before)
     after_longest = _longest_homopolymer(after)
     return after_longest >= 6 and after_longest > before_longest
+
+
+def _is_transition(reference: str, alternate: str) -> bool:
+    return (reference, alternate) in {
+        ("A", "G"),
+        ("G", "A"),
+        ("C", "T"),
+        ("T", "C"),
+    }
 
 
 def _sequence_after_plans(
@@ -335,10 +362,14 @@ def _apply_point_mutation(
         automatic=automatic,
         reason=reason,
     )
+    consequence_note = (
+        f"{original_codon}->{altered_codon}, {amino_acid} unchanged."
+        if original_codon and altered_codon
+        else f"{protein_consequence or 'non-coding sequence'}."
+    )
     note = (
         f"{kind}: gene-oriented {reference_base}>{alternate_base} at arm base {index0 + 1} "
-        f"(chr{arm.chromosome}:{mutation.genomic_position1:,}); "
-        f"{original_codon}->{altered_codon}, {amino_acid} unchanged."
+        f"(chr{arm.chromosome}:{mutation.genomic_position1:,}); {consequence_note}"
     )
     return replace(
         arm,
@@ -386,6 +417,105 @@ def _apply_synonymous_plan(
     return arm
 
 
+def _automatic_noncoding_sapi_mutation(
+    *,
+    arm: HomologyArm,
+    motif: str,
+    motif_start0: int,
+    record: TranscriptRecord,
+    transcript_mapping: list[int],
+    cds_start_cdna0: int,
+    current_cdna: list[str],
+) -> HomologyArm | None:
+    """Remove a SapI site with one safe, deterministic non-coding substitution."""
+    genome_to_cdna = {
+        genomic0: cdna0 for cdna0, genomic0 in enumerate(transcript_mapping)
+    }
+    cds_end_cdna0 = cds_start_cdna0 + len(record.cds)
+    protected = _noncoding_sapi_exclusion_positions0(record)
+    original_sequence = arm.final_gene_oriented_sequence
+    old_site_keys = {
+        (str(site["motif"]), int(site["position0"]))
+        for site in _arm_site_records(original_sequence)
+    }
+    candidates: list[
+        tuple[tuple[int, int, float, int, int, str], int, int, int | None, str]
+    ] = []
+    motif_center0 = motif_start0 + (len(motif) - 1) / 2
+    for arm_index0 in range(motif_start0, motif_start0 + len(motif)):
+        genomic0 = _arm_index_to_genomic_position1(arm, arm_index0, record.strand) - 1
+        cdna0 = genome_to_cdna.get(genomic0)
+        if cdna0 is not None and cds_start_cdna0 <= cdna0 < cds_end_cdna0:
+            continue
+        if genomic0 in protected:
+            continue
+        reference = original_sequence[arm_index0]
+        for alternate in "ACGT":
+            if alternate == reference:
+                continue
+            candidate = (
+                original_sequence[:arm_index0]
+                + alternate
+                + original_sequence[arm_index0 + 1:]
+            )
+            if _creates_longer_homopolymer(original_sequence, candidate):
+                continue
+            new_site_keys = {
+                (str(site["motif"]), int(site["position0"]))
+                for site in _arm_site_records(candidate)
+            }
+            if (motif, motif_start0) in new_site_keys:
+                continue
+            if not new_site_keys.issubset(old_site_keys):
+                continue
+            score = (
+                0 if cdna0 is None else 1,
+                _longest_homopolymer(
+                    candidate[max(0, arm_index0 - 6):arm_index0 + 7]
+                ),
+                abs(arm_index0 - motif_center0),
+                0 if _is_transition(reference, alternate) else 1,
+                arm_index0,
+                alternate,
+            )
+            candidates.append(
+                (score, arm_index0, genomic0, cdna0, alternate)
+            )
+    if not candidates:
+        return None
+
+    _, arm_index0, genomic0, cdna0, alternate = min(
+        candidates, key=lambda item: item[0]
+    )
+    region = "outside the mature transcript" if cdna0 is None else "in an untranslated region"
+    arm = _apply_point_mutation(
+        arm,
+        index0=arm_index0,
+        alternate_base=alternate,
+        strand=record.strand,
+        kind="SapI domestication",
+        transcript_position1=cdna0 + 1 if cdna0 is not None else None,
+        original_codon="",
+        altered_codon="",
+        amino_acid="",
+        protein_consequence="non-coding (not translated)",
+        reason=(
+            f"Automatically remove the internal {motif} SapI recognition site with one "
+            f"non-coding substitution {region}. Coding bases and the first/last "
+            f"{SPLICE_EDGE_EXCLUSION_NT} exonic bases plus "
+            f"{NONCODING_SPLICE_FLANK_EXCLUSION_NT} intronic splice-flank bases are "
+            "excluded; no new SapI site or "
+            "long homopolymer is created. Eligible candidates are ranked by outside-transcript "
+            "location, local homopolymer length, distance from the motif center, then transition."
+        ),
+    )
+    if cdna0 is not None:
+        current_cdna[cdna0] = alternate
+    if arm.mutations[-1].genomic_position1 != genomic0 + 1:
+        raise DesignError("Non-coding SapI mutation coordinate validation failed")
+    return arm
+
+
 def _domesticate_sapi_sites(
     *,
     arm: HomologyArm,
@@ -394,7 +524,7 @@ def _domesticate_sapi_sites(
     cds_start_cdna0: int,
     current_cdna: list[str],
 ) -> tuple[HomologyArm, list[str]]:
-    """Remove coding SapI sites with the smallest synonymous codon change available."""
+    """Remove SapI sites with synonymous coding or guarded non-coding changes."""
     warnings: list[str] = []
     unresolved: set[tuple[str, int]] = set()
     while True:
@@ -460,12 +590,25 @@ def _domesticate_sapi_sites(
                 ((plan.change_count, changes_outside_site, plan.altered_codon), plan)
             )
         if not viable:
+            noncoding_arm = _automatic_noncoding_sapi_mutation(
+                arm=arm,
+                motif=motif,
+                motif_start0=motif_start0,
+                record=record,
+                transcript_mapping=transcript_mapping,
+                cds_start_cdna0=cds_start_cdna0,
+                current_cdna=current_cdna,
+            )
+            if noncoding_arm is not None:
+                arm = noncoding_arm
+                continue
             unresolved.add((motif, motif_start0))
             genomic_positions = sorted(position + 1 for position in eligible_genomic_positions0)
             warnings.append(
                 f"Internal SapI site {motif} in {arm.name} at arm base {motif_start0 + 1} "
                 f"(genomic bases {genomic_positions[0]}-{genomic_positions[-1]}) could not be "
-                "removed by a verified synonymous coding change; manual review is required."
+                "removed by a verified synonymous coding change or an eligible non-coding "
+                "single-base substitution; manual intervention is required."
             )
             continue
         plan = min(viable, key=lambda item: item[0])[1]
@@ -730,8 +873,8 @@ def _design_guide_blocking_mutations(
         guide.blocking_mutation_note = (
             "A guide-blocking mutation is still required. No synonymous coding change "
             "within the retained target could destroy the PAM or satisfy the 14-nt cutoff; "
-            "noncoding changes are not released automatically. Manual review or another "
-            "guide is required."
+            "noncoding changes are not released automatically. Manual sequence design or "
+            "another guide is required, so no sequence-complete output is released."
         )
         warnings.append(guide.blocking_mutation_note)
         return five_prime_arm, three_prime_arm, warnings
@@ -985,7 +1128,7 @@ def _finalize_result(
                 },
                 {
                     "check": "Target disrupted by edit",
-                    "status": "PASS" if top.target_destroyed else "REVIEW",
+                    "status": "PASS" if top.target_destroyed else "INFO",
                     "detail": top.rationale,
                 },
                 {
@@ -1079,7 +1222,11 @@ def _finalize_result(
     sequence_complete = bool(
         can_release and fusion_protein and backbone_verified and plasmid_assembly_verified
     )
-    status = "SEQUENCE-COMPLETE COMPUTATIONAL DESIGN" if sequence_complete else "REVIEW REQUIRED"
+    status = (
+        "SEQUENCE-COMPLETE COMPUTATIONAL DESIGN"
+        if sequence_complete
+        else "DESIGN BLOCKED - NO SEQUENCE-COMPLETE OUTPUT"
+    )
     warnings = list(extra_warnings or [])
     warnings.extend(
         [

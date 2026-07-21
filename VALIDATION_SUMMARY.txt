@@ -1,4 +1,4 @@
-HDR TAG DESIGNER v0.5.0 - VALIDATION SUMMARY
+HDR TAG DESIGNER v0.5.1 - VALIDATION SUMMARY
 Generated: 2026-07-21
 
 SCOPE
@@ -8,7 +8,7 @@ SCOPE
 - Reference sequence only; no genome-wide off-target analysis.
 - Circular custom SnapGene backbones are supported when they retain one exact Bollen SapI/linker architecture and pass frame/stop/topology validation.
 - N-terminal mode produces full fragments, fusion translation, circular plasmid assembly, GenBank, FASTA, JSON, and TXT output.
-- Live coding designs automatically search verified synonymous guide-blocking and SapI-domestication changes; noncoding/unsafe cases remain blocked.
+- Designs automatically search verified synonymous guide-blocking changes and synonymous or guarded non-coding SapI-domestication changes; unsafe cases remain blocked.
 - Guide proximity remains the primary ranking criterion even when the nearer guide needs a synonymous blocking change.
 
 TUBB5 COMPUTATIONAL TEST
@@ -57,12 +57,13 @@ N-TERMINAL BACKBONE CHECK
 - Standard 600-bp-arm donor/final plasmid: 1972 bp / 3947 bp; zero residual SapI sites.
 
 AUTOMATED VALIDATION
-- Unit/integration tests: 32 passed.
+- Unit/integration tests: 33 passed.
 - Streamlit AppTest: passed.
 - Streamlit local server health endpoint: ok; root returned HTTP 200.
 - Generic mouse and human C-terminal code paths: passed with deterministic synthetic Ensembl client.
 - N-terminal plus- and minus-strand complete paths: passed with deterministic synthetic Ensembl client.
 - Custom `.dna` inference and complete C/N assembly: passed using both verified Addgene fixtures.
+- Non-coding SapI fallback: passed for a deterministic UTR fixture and live mouse Actb N-terminal design. Actb UHA `GCTCTTC` at chr5:142,891,878-142,891,884 was resolved by UHA base 158 C>A; the 3947-bp plasmid was sequence-complete and SapI-free.
 - Generic synonymous PAM blocking, seed blocking, single/multiple SapI domestication, plus/minus strand mapping, unsafe-case refusal, and mutation export propagation: passed.
 - SapI quality-control panel and report summary: total/per-arm counts, site coordinates, mutation/codon details, protein consequence, and unresolved-site status passed.
 - Ensembl bounded retries for HTTP 429/5xx/network failures and explicit transcript-parent validation: passed.

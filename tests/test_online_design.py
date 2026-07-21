@@ -18,7 +18,7 @@ from hdr_designer.backbones import (
     n_terminal_backbone_analysis,
     NTERM_BACKBONE,
 )
-from hdr_designer.design import design_online
+from hdr_designer.design import _automatic_noncoding_sapi_mutation, design_online
 from hdr_designer.ensembl import SPECIES
 from hdr_designer.exports import (
     assembled_plasmid_genbank,
@@ -26,7 +26,7 @@ from hdr_designer.exports import (
     design_report,
     sapi_qc_rows,
 )
-from hdr_designer.models import Exon, TranscriptRecord
+from hdr_designer.models import Exon, HomologyArm, TranscriptRecord
 from hdr_designer.sequence import reverse_complement, translate
 
 
@@ -436,6 +436,10 @@ class OnlineDesignPathTest(unittest.TestCase):
             ),
         )
         self.assertFalse(result.sequence_complete)
+        self.assertEqual(
+            result.status,
+            "DESIGN BLOCKED - NO SEQUENCE-COMPLETE OUTPUT",
+        )
         self.assertTrue(result.top_guide.blocking_mutation_required)
         self.assertIn("No synonymous coding change", result.top_guide.blocking_mutation_note)
 
@@ -463,21 +467,118 @@ class OnlineDesignPathTest(unittest.TestCase):
         )
         self.assertEqual(result.five_prime_arm.final_sapi_sites, [])
 
-    def test_noncoding_sapi_site_requires_manual_review(self) -> None:
+    def test_noncoding_sapi_site_is_automatically_domesticated(self) -> None:
         result = design_online(
             species_key="human",
             gene="MockTagGene",
             client=SyntheticEnsemblClient("human", noncoding_sapi_site=True),
         )
-        self.assertFalse(result.sequence_complete)
-        self.assertEqual(len(result.three_prime_arm.final_sapi_sites), 1)
-        self.assertTrue(
-            any("manual review is required" in warning for warning in result.warnings)
+        self.assertTrue(result.sequence_complete)
+        self.assertEqual(result.three_prime_arm.final_sapi_sites, [])
+        mutations = result.three_prime_arm.mutations
+        self.assertEqual(len(mutations), 1)
+        self.assertEqual(
+            (
+                mutations[0].kind,
+                mutations[0].arm_position1,
+                mutations[0].genomic_position1,
+                mutations[0].reference_base,
+                mutations[0].alternate_base,
+                mutations[0].transcript_position1,
+                mutations[0].protein_consequence,
+            ),
+            (
+                "SapI domestication",
+                104,
+                2107,
+                "C",
+                "A",
+                1107,
+                "non-coding (not translated)",
+            ),
         )
         qc_rows = sapi_qc_rows(result)
         self.assertEqual(len(qc_rows), 1)
-        self.assertEqual(qc_rows[0]["Status"], "Unresolved - review required")
-        self.assertEqual(qc_rows[0]["Mutation(s)"], "None")
+        self.assertEqual(qc_rows[0]["Status"], "Resolved")
+        self.assertEqual(qc_rows[0]["Codon change"], "Not applicable")
+        self.assertEqual(qc_rows[0]["Protein consequence"], "non-coding (not translated)")
+
+    def test_intronic_sapi_fallback_respects_splice_flanks(self) -> None:
+        species = SPECIES["mouse"]
+        record = TranscriptRecord(
+            species=species,
+            gene_symbol="MockSpliceGene",
+            gene_id="MOCKSPLICE1",
+            transcript_id="MOCKSPLICET1",
+            transcript_version="1",
+            chromosome="1",
+            strand=1,
+            cdna="A" * 100,
+            cds="ATG" + "GCT" * 18 + "TAA",
+            exons=[Exon(start1=1001, end1=1100, strand=1, stable_id="MOCKE1")],
+            source="synthetic test fixture",
+            source_release="test",
+        )
+        mapping = list(range(1000, 1100))
+        site = {"motif": "GCTCTTC", "position0": 0, "position1": 1}
+        intronic_arm = HomologyArm(
+            name="5-prime homology arm",
+            length=7,
+            chromosome="1",
+            genomic_start0=1200,
+            genomic_end0=1207,
+            gene_oriented_sequence="GCTCTTC",
+            chromosome_forward_sequence="GCTCTTC",
+            gc_percent=57.1,
+            sapi_sites=[site],
+            final_sapi_sites=[site],
+        )
+        mutated = _automatic_noncoding_sapi_mutation(
+            arm=intronic_arm,
+            motif="GCTCTTC",
+            motif_start0=0,
+            record=record,
+            transcript_mapping=mapping,
+            cds_start_cdna0=10,
+            current_cdna=list(record.cdna),
+        )
+        self.assertIsNotNone(mutated)
+        assert mutated is not None
+        self.assertEqual(mutated.final_sapi_sites, [])
+        self.assertEqual(
+            (
+                mutated.mutations[0].arm_position1,
+                mutated.mutations[0].genomic_position1,
+                mutated.mutations[0].reference_base,
+                mutated.mutations[0].alternate_base,
+                mutated.mutations[0].transcript_position1,
+            ),
+            (5, 1205, "T", "A", None),
+        )
+
+        splice_flank_arm = HomologyArm(
+            name="3-prime homology arm",
+            length=7,
+            chromosome="1",
+            genomic_start0=1097,
+            genomic_end0=1104,
+            gene_oriented_sequence="GCTCTTC",
+            chromosome_forward_sequence="GCTCTTC",
+            gc_percent=57.1,
+            sapi_sites=[site],
+            final_sapi_sites=[site],
+        )
+        self.assertIsNone(
+            _automatic_noncoding_sapi_mutation(
+                arm=splice_flank_arm,
+                motif="GCTCTTC",
+                motif_start0=0,
+                record=record,
+                transcript_mapping=mapping,
+                cds_start_cdna0=10,
+                current_cdna=list(record.cdna),
+            )
+        )
 
     def test_multiple_coding_sapi_sites_are_domesticated(self) -> None:
         result = design_online(

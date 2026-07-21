@@ -2,7 +2,7 @@
 
 A local Streamlit prototype for Bollen-style **in-trans paired nicking (ITPN)** gene tagging with **SpCas9 D10A**. The first input is species: mouse **GRCm39** or human **GRCh38**.
 
-Version 0.5.0 supports both finalized Bollen donor architectures:
+Version 0.5.1 supports both finalized Bollen donor architectures:
 
 - N-terminal `mNeonGreen-GGGGSAS` using Addgene **#169226**
 - C-terminal `GGGGSAS-mNeonGreen-stop` using Addgene **#169227**
@@ -19,7 +19,7 @@ Custom files are accepted only after exact structural checks; arbitrary adapters
 2. Defines an N- or C-terminal insertion boundary from the selected transcript.
 3. Finds all SpCas9-NGG candidates with a nominal nick within the chosen window.
 4. Ranks guides by the Bollen priorities available locally: distance first, target disruption second, then basic GC/poly-T properties. A nearer guide is not demoted merely because it needs a synonymous blocking mutation.
-5. Generates gene-oriented homology arms, detects every internal SapI site, and automatically removes coding sites when a verified synonymous codon replacement is available.
+5. Generates gene-oriented homology arms, detects every internal SapI site, and automatically removes it using either a verified synonymous coding change or a guarded single-base non-coding change. Non-coding candidates exclude coding bases, the first/last three bases of every exon, and six intronic bases on either side of each splice boundary; they must not create another SapI site or a longer problematic homopolymer. The automatic ranking prefers a base outside the mature transcript, lower local homopolymer burden, a central motif position, then a transition.
 6. Re-evaluates the selected target after all donor edits. If needed, it searches synonymous changes that destroy the PAM first, then PAM-proximal seed changes that satisfy the 14-nt retained-segment cutoff. Every released change must preserve the complete CDS translation and avoid new SapI sites.
 7. Generates the exact Bollen supplementary N- or C-terminal UHA/DHA synthesis fragments and PCR-primer tail templates.
 8. Parses Addgene #169226 or #169227, verifies all four SapI sites, and reconstructs the payload between the inner cuts. N-terminal order is `TAC -> GTG -> AGC -> AAT`; C-terminal order is `TAC -> GGC -> TGA -> AAT`.
@@ -28,7 +28,9 @@ Custom files are accepted only after exact structural checks; arbitrary adapters
 11. Presents a SapI quality-control panel with total and per-arm counts plus a site-by-site record of coordinates, resolution status, nucleotide/codon changes, protein consequence, and selection reason.
 12. Optionally classifies an uploaded circular SnapGene backbone as N- or C-terminal from its SapI overhang order, validates its GGGGSAS linker and reading frame, then runs the same complete assembly and export path.
 
-The prototype does **not** calculate a validated on-target activity score, perform off-target searches, inspect sample-specific variants, or design locus-specific PCR annealing regions. Noncoding guide-blocking and SapI changes are deliberately withheld for manual review, as are coding cases for which no verified synonymous solution is found.
+The prototype does **not** calculate a validated on-target activity score, perform off-target searches, inspect sample-specific variants, or design locus-specific PCR annealing regions. Non-coding guide-blocking changes remain withheld, while non-coding SapI sites are now domesticated automatically when an eligible one-base solution passes the sequence gates. Sites confined to coding bases without a synonymous solution, protected splice-edge bases, or otherwise unsafe candidates remain blocked.
+
+There is not yet an interactive mutation editor. Accordingly, cases the automatic engine cannot resolve are labeled `DESIGN BLOCKED - NO SEQUENCE-COMPLETE OUTPUT` rather than suggesting that an in-app review action is available. A future mutation-choice interface can expose alternative eligible SapI substitutions.
 
 ## Run locally
 

@@ -1,8 +1,81 @@
 # HDR Tag Designer — Development Handoff
 
-**Project version reviewed:** `0.5.0` (working tree; not yet committed)
+**Project version reviewed:** `0.5.1` (working tree; not yet committed)
 **Handoff date:** 2026-07-21
 **Purpose:** Continue development, debugging, and validation of the local HDR-tagging design tool in a new session or local coding environment.
+
+---
+
+## Future features — prioritized backlog
+
+These are explicitly requested future features. They are not implemented in version `0.5.1`.
+
+### F1. Show the reference and final edited guide-binding sequence
+
+Extend the **Selected guide** section so a user can directly compare what Cas9 sees before and after the donor edit.
+
+Required presentation:
+
+- reference target/protospacer and PAM, in guide orientation (`5' -> 3'`);
+- final donor-allele sequence across the same genomic region after the intended insertion/deletion and every SapI/guide-blocking mutation;
+- original and final PAM called out separately;
+- strand and genomic coordinates;
+- a compact alignment highlighting substitutions, deleted bases, the insertion boundary, and PAM changes;
+- an explicit result such as `PAM destroyed`, `target split by insertion`, or the final longest retained target segment;
+- the same information in TXT and JSON exports, not only in Streamlit.
+
+An insertion can split the original 23-nt target and place hundreds of payload bases between its retained halves. Do not display a misleading synthetic 23-nt "final target" in that case. Show the actual edited-locus context, using a clearly labelled insertion marker/length in the compact alignment and an expandable full sequence where useful.
+
+Implementation note: `_donor_target_after_edits()` and the retained-segment calculations already reconstruct part of this state internally. Promote the original/final target context into explicit result-model fields and test plus/minus strands, PAM destruction, synonymous PAM/seed changes, and targets split by N- or C-terminal insertion.
+
+### F2. Twist Bioscience synthesis-complexity screening
+
+Automatically screen every sequence intended for synthetic ordering, especially the final UHA and DHA synthesis fragments and any custom payload/orderable fragment, before labelling the design sequence-complete.
+
+Required behavior:
+
+- evaluate the final post-mutation sequences rather than the reference arms;
+- identify the exact problematic interval and reason, rather than returning only a generic pass/fail;
+- cover synthesis-relevant features such as extreme local/global GC, long homopolymers, direct or inverted repeats, low-complexity sequence, strong secondary-structure/hairpin potential, and other motifs/constraints in the current Twist Bioscience guidance;
+- summarize each orderable fragment as `PASS`, `WARNING`, or `BLOCKED` and show the findings in Streamlit, TXT, and JSON;
+- withhold an order-ready/sequence-complete label when a hard synthesis constraint is violated;
+- where safe, propose alternative synonymous or non-coding mutations, but never silently change a coding sequence, splice-protected base, junction overhang, guide-protection mutation, or payload without rerunning every existing validation gate;
+- retain the vendor/rule-set version and screening date in provenance.
+
+Do not guess or permanently hard-code Twist thresholds from memory. At implementation time, verify the current official Twist synthesis guidelines and any available screening/API workflow, record the source/version, and keep vendor-specific thresholds configurable. Add deterministic fixtures for every rule so normal vendor/network availability is not required by the test suite.
+
+Possible later extension: expose multiple eligible sequence-complexity/SapI fixes for user selection. Until an interactive mutation-choice workflow exists, keep safe changes automatic and make the exact selection rationale visible.
+
+### F3. Genotyping primer design
+
+Design and report three genotyping PCR assays for every sequence-complete donor design:
+
+1. **Non-edited/WT locus assay**
+   - Design primers that amplify the non-edited locus across or around the native insertion site.
+   - Prefer a configuration that clearly distinguishes the WT allele from the edited allele by allele specificity or expected amplicon size.
+   - Report whether the edited allele is expected to amplify, and give the expected WT and edited product sizes where applicable.
+2. **5-prime insertion-junction assay**
+   - Use a locus-specific forward primer in genomic sequence on the 5-prime side, preferably outside the UHA so that residual donor plasmid or correctly assembled donor DNA alone cannot produce the expected product.
+   - Use a reverse primer inside the inserted payload.
+   - Because the reverse primer depends only on the payload/backbone architecture, define and validate it once per payload configuration and reuse it across genes using the same targeting backbone where the junction geometry permits.
+3. **3-prime insertion-junction assay**
+   - Use a forward primer inside the inserted payload.
+   - Use a locus-specific reverse primer in genomic sequence on the 3-prime side, preferably outside the DHA.
+   - Because the forward primer depends only on the payload/backbone architecture, define and validate it once per payload configuration and reuse it across genes using the same targeting backbone where the junction geometry permits.
+
+Required output and validation:
+
+- primer names, sequences (`5' -> 3'`), strand/orientation, genomic or payload coordinates, length, GC percentage, melting temperature, and expected amplicon sequence/size;
+- explicit indication of which primers are locus-specific and which are reusable payload primers;
+- separate predictions for WT and edited alleles, including the reason an assay should or should not amplify each allele;
+- specificity checks against the selected reference genome and against the complete assembled donor plasmid;
+- rejection or warning for problematic homopolymers, repeats, strong self-dimers, cross-dimers, hairpins, extreme GC/Tm, or non-unique genomic binding;
+- primer placement outside the homology arms for external junction primers whenever sequence quality and amplicon-size constraints allow;
+- plus- and minus-strand genes handled without changing the biological 5-prime/3-prime assay definitions;
+- Streamlit display plus TXT, CSV, and JSON exports;
+- configurable target amplicon sizes and PCR/primer constraints, with the rule-set and genome assembly recorded in provenance.
+
+Implementation should use the final edited locus and assembled payload sequences, including every automatic SapI and guide-blocking mutation. Reusable payload primers must be keyed to the actual payload definition/version rather than only to a human-readable backbone name. Add regression fixtures for N- and C-terminal designs, both gene strands, WT discrimination, repeated/non-unique genomic primer sites, and custom payloads.
 
 ---
 
@@ -11,15 +84,16 @@
 Development is continuing on the Git branch:
 
 ```text
-feat/n-terminal-backbone-support
+fix/noncoding-sapi-domestication
 ```
 
-Version `0.5.0` retains the automatic-mutation work from `0.4.0` and adds the first backbone-extensibility chunk:
+Version `0.5.1` retains the automatic-mutation and backbone work from `0.5.0` and fixes non-coding SapI domestication:
 
 1. complete N-terminal tagging with the uploaded Addgene #169226 backbone;
 2. reusable frozen `BackboneDefinition` configurations for #169226 and #169227;
 3. shared N/C fragment, primer, payload, circular-assembly, annotation, and validation code;
 4. guarded custom SnapGene `.dna` upload classified from its SapI overhang order.
+5. automatic one-base domestication of eligible non-coding SapI sites in homology arms.
 
 The previous release's behavior remains intact:
 
@@ -34,7 +108,7 @@ The previous release's behavior remains intact:
 Current validation state:
 
 ```text
-32/32 unittest tests pass
+33/33 unittest tests pass
 Bundled Tubb5 fixture remains sequence-complete
 Exact #169227 Tubb5 sequence/coordinate/plasmid regressions pass unchanged
 Synthetic N-terminal designs pass on plus and minus gene strands
@@ -55,9 +129,19 @@ For the selected nearest guide, the live design path:
 5. ranks non-PAM solutions by fewest changed bases, proximity to the PAM, then remaining segment length;
 6. reconstructs and translates the complete CDS and requires an identical protein sequence;
 7. rejects changes that introduce a SapI site, lengthen a homopolymer to at least six bases, or touch the first/last three exonic bases near a splice boundary;
-8. leaves noncoding or otherwise unresolved changes blocked for manual review instead of silently switching to a farther guide.
+8. leaves noncoding or otherwise unresolved **guide-blocking** changes blocked instead of silently switching to a farther guide.
 
-Generic SapI domestication examines every `GCTCTTC` and `GAAGAGC` motif in both homology arms. It applies the smallest verified synonymous coding change available, rechecks the complete CDS and all arm sites, and leaves noncoding/unsafe sites unresolved. The fixed Tubb5 fixture retains its exact locked `GAG -> GAA` regression correction.
+Generic SapI domestication examines every `GCTCTTC` and `GAAGAGC` motif in both homology arms. It first applies the smallest verified synonymous coding change available. If none exists, it searches one-base non-coding substitutions, preferring bases outside the mature transcript over UTR bases and excluding every coding base, the first/last three bases of each exon, and six intronic bases on either side of each splice boundary. A released candidate must remove the original site without creating a new SapI site or lengthening a problematic homopolymer. The fixed Tubb5 fixture retains its exact locked `GAG -> GAA` regression correction.
+
+Live regression check for mouse **Actb**, N-terminal mode, canonical `ENSMUST00000100497.11`:
+
+- original UHA SapI site: `GCTCTTC`, arm bases 155-161, `chr5:142,891,878-142,891,884`;
+- location: intron between the first two transcript exons;
+- automatic change: UHA base 158, `chr5:142,891,881`, gene-oriented `C>A`;
+- final arm SapI sites: zero;
+- final result: sequence-complete 3,947-bp N-terminal plasmid with zero residual SapI sites.
+
+The former generic `REVIEW REQUIRED` status was renamed to `DESIGN BLOCKED - NO SEQUENCE-COMPLETE OUTPUT`, because the current UI has no sequence-editing/review action. A future mutation-choice interface may expose the eligible non-coding SapI candidates; version 0.5.1 selects automatically and records the exact ranking rationale.
 
 ### 0.2 N-terminal and custom-backbone behavior now implemented
 
@@ -152,7 +236,7 @@ The following choices were explicitly agreed upon:
 - **Validation transcript:** `ENSMUST00000001566`
 - **Custom backbones:** supported for structurally matching circular SnapGene `.dna` files
 - **Custom payload-only input:** next development chunk
-- **Blocking mutations:** automatically design verified synonymous coding changes when possible; otherwise block for manual review
+- **Blocking mutations:** automatically design verified synonymous coding changes when possible; otherwise block sequence-complete output
 
 ---
 
@@ -161,7 +245,7 @@ The following choices were explicitly agreed upon:
 The current repository version is:
 
 ```text
-0.5.0 working tree on feat/n-terminal-backbone-support
+0.5.1 working tree on fix/noncoding-sapi-domestication
 ```
 
 Main project structure:
@@ -1136,7 +1220,7 @@ A sequence-valid design is not automatically biologically valid. Terminal taggin
 
 The current version should be considered:
 
-> A sequence-complete N- and C-terminal prototype for reference-based tagging of mouse or human protein-coding transcripts using Bollen/Addgene #169226 or #169227, with a guarded custom SnapGene-backbone path for the same SapI/linker architectures. It automatically applies verified synonymous guide-blocking and coding SapI-domestication mutations, exposes those decisions for quality control, and blocks unresolved sequence cases for manual review.
+> A sequence-complete N- and C-terminal prototype for reference-based tagging of mouse or human protein-coding transcripts using Bollen/Addgene #169226 or #169227, with a guarded custom SnapGene-backbone path for the same SapI/linker architectures. It automatically applies verified synonymous guide-blocking plus synonymous-coding or guarded non-coding SapI-domestication mutations, exposes those decisions for quality control, and withholds sequence-complete output when no safe automatic solution exists.
 
 The next major extensibility objective is:
 

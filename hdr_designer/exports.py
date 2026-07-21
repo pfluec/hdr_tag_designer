@@ -351,7 +351,7 @@ def sapi_qc_rows(result: DesignResult) -> list[dict[str, Any]]:
                     "Genomic interval": _sapi_site_genomic_interval(
                         result, arm, position0, len(motif)
                     ),
-                    "Status": "Resolved" if resolved else "Unresolved - review required",
+                    "Status": "Resolved" if resolved else "Unresolved - design blocked",
                     "Mutation(s)": mutation_text,
                     "Codon change": ", ".join(codon_changes) or "Not applicable",
                     "Protein consequence": (
@@ -374,10 +374,10 @@ def sapi_qc_rows(result: DesignResult) -> list[dict[str, Any]]:
                     "Genomic interval": _sapi_site_genomic_interval(
                         result, arm, position0, len(motif)
                     ),
-                    "Status": "New site introduced - blocked",
+                    "Status": "New site introduced - design blocked",
                     "Mutation(s)": "See complete arm mutation list",
-                    "Codon change": "Review required",
-                    "Protein consequence": "Review required",
+                    "Codon change": "Not released",
+                    "Protein consequence": "Not released",
                     "Selection reason": "A SapI site is present only in the final arm sequence.",
                 }
             )
@@ -414,13 +414,18 @@ def _arm_report(arm: HomologyArm) -> list[str]:
         f"  Final internal SapI sites: {len(arm.final_sapi_sites)}",
     ]
     if arm.mutations:
-        lines.append("  Final silent mutations:")
+        lines.append("  Final automatic sequence changes:")
         for mutation in arm.mutations:
+            consequence = (
+                f"{mutation.original_codon}>{mutation.altered_codon}; {mutation.amino_acid}"
+                if mutation.original_codon and mutation.altered_codon
+                else mutation.protein_consequence or "non-coding"
+            )
             lines.append(
                 f"    - {mutation.kind}: arm base {mutation.arm_position1}, "
                 f"chr{arm.chromosome}:{mutation.genomic_position1:,} "
                 f"gene-oriented {mutation.reference_base}>{mutation.alternate_base}; "
-                f"{mutation.original_codon}>{mutation.altered_codon}; {mutation.amino_acid}."
+                f"{consequence}."
             )
             lines.append(f"      Reason: {mutation.reason}")
             if mutation.protein_consequence:

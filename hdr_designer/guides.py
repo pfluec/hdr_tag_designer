@@ -56,7 +56,7 @@ def _activity_heuristic(spacer: str) -> str:
         return "favorable basic spacer properties"
     if 30.0 <= gc <= 70.0:
         return "acceptable basic spacer properties"
-    return "review: extreme GC content"
+    return "caution: extreme GC content"
 
 
 

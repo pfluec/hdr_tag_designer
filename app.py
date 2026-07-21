@@ -23,7 +23,7 @@ from hdr_designer.exports import (
 from hdr_designer.models import DesignResult, HomologyArm
 from hdr_designer.snapgene import SnapGeneError
 
-APP_VERSION = "0.5.0"
+APP_VERSION = "0.5.1"
 
 
 def _download_buttons(result: DesignResult) -> None:
@@ -65,14 +65,14 @@ def _show_arm(arm: HomologyArm) -> None:
                 "GC (%)": arm.gc_percent,
                 "Raw SapI sites": len(arm.sapi_sites),
                 "Final SapI sites": len(arm.final_sapi_sites),
-                "Verified synonymous changes": len(arm.mutations),
+                "Verified automatic changes": len(arm.mutations),
             }]
         ),
         hide_index=True,
         width="stretch",
     )
     if arm.mutations:
-        st.markdown("**Verified synonymous changes in final arm**")
+        st.markdown("**Verified automatic changes in final arm**")
         st.dataframe(
             pd.DataFrame([asdict(mutation) for mutation in arm.mutations]),
             hide_index=True,
@@ -124,7 +124,7 @@ def _show_sapi_quality_control(result: DesignResult) -> None:
     else:
         st.warning(
             f"{remaining} SapI site(s) remain in the final arms; order-ready cloning "
-            "fragments are withheld pending review."
+            "fragments are withheld because automatic resolution failed."
         )
     if rows:
         st.markdown("#### Site-by-site resolution")
@@ -379,7 +379,8 @@ def main() -> None:
         "ITPN / SpCas9 D10A; mouse GRCm39 or human GRCh38; reference sequence only; "
         "verified Addgene #169226 N-terminal and #169227 C-terminal mNeonGreen backbones, "
         "plus structurally validated custom SnapGene backbones; "
-        "automatic synonymous coding mutations with noncoding cases held for review."
+        "automatic synonymous guide blocking and automatic coding/non-coding SapI "
+        "domestication, with protected or otherwise unsafe cases blocked."
     )
 
     if not run:
