@@ -1,81 +1,78 @@
 # HDR Tag Designer — Development Handoff
 
-**Project version reviewed:** `0.6.0` (working tree; not yet committed)
+**Project version reviewed:** `0.6.0` on `main` at merge commit `9398337`
 **Handoff date:** 2026-07-21
 **Purpose:** Continue development, debugging, and validation of the local HDR-tagging design tool in a new session or local coding environment.
 
 ---
 
-## Future features — prioritized backlog
+## Next features — prioritized ordering and export roadmap
 
-F1 was implemented in version `0.6.0`. F3 has a working baseline in `0.6.0`; its remaining genome-wide uniqueness check is documented below. F2 remains the next separate future feature.
+The core design workflow is feature-complete for the current scope. The next development chunk should focus on producing the small set of files that are actually sent for ordering or retained as final annotated records.
 
-### F1. Show the reference and final edited guide-binding sequence — IMPLEMENTED IN 0.6.0
+### P1. Twist Bioscience sequence-ordering CSV — required
 
-Extend the **Selected guide** section so a user can directly compare what Cas9 sees before and after the donor edit.
+Add a CSV download containing every sequence intended for synthesis through Twist Bioscience.
 
-Required presentation:
+Requirements:
 
-- reference target/protospacer and PAM, in guide orientation (`5' -> 3'`);
-- final donor-allele sequence across the same genomic region after the intended insertion/deletion and every SapI/guide-blocking mutation;
-- original and final PAM called out separately;
-- strand and genomic coordinates;
-- a compact alignment highlighting substitutions, deleted bases, the insertion boundary, and PAM changes;
-- an explicit result such as `PAM destroyed`, `target split by insertion`, or the final longest retained target segment;
-- the same information in TXT and JSON exports, not only in Streamlit.
+- export the **final post-mutation** UHA/DHA orderable fragments, never the unmodified reference arms;
+- include any separately ordered custom payload or other synthetic fragment when applicable;
+- use stable, informative names containing at least gene, terminus, fragment role, and design identity;
+- include sequence, length, checksum, and relevant design/QC status columns in addition to the vendor-required fields;
+- verify the current Twist upload schema from an official template or documentation before fixing column names;
+- keep vendor-specific column mapping isolated in the export layer and add a deterministic CSV regression fixture;
+- retain or implement synthesis-complexity checks against the final orderable sequence, with exact warning intervals and a recorded rule-set version; do not invent Twist thresholds from memory.
 
-An insertion can split the original 23-nt target and place hundreds of payload bases between its retained halves. Do not display a misleading synthetic 23-nt "final target" in that case. Show the actual edited-locus context, using a clearly labelled insertion marker/length in the compact alignment and an expandable full sequence where useful.
+### P2. Primer-generation guide/function and primer-ordering CSV — required, awaiting user-supplied guide
 
-Implementation note: `_donor_target_after_edits()` and the retained-segment calculations already reconstruct part of this state internally. Promote the original/final target context into explicit result-model fields and test plus/minus strands, PAM destruction, synonymous PAM/seed changes, and targets split by N- or C-terminal insertion.
+The user will add a small primer-generation guide/tool to the repository. Once present:
 
-### F2. Twist Bioscience synthesis-complexity screening
+1. read it completely and treat its rules as the authoritative primer-generation function for this project;
+2. integrate it with the existing homology-arm cloning primers and genotyping-primer data structures rather than maintaining two unrelated implementations;
+3. produce a vendor-ready primer-ordering CSV with stable primer names and complete `5' -> 3'` sequences;
+4. retain tail and annealing portions separately in internal data even when the ordering CSV uses the complete oligo;
+5. include primer purpose, length, annealing temperature, GC percentage, purification/modification fields required by the ordering schema, and validation warnings where useful;
+6. add locked Tubb5 C-terminal and Actb N-terminal CSV regressions.
 
-Automatically screen every sequence intended for synthetic ordering, especially the final UHA and DHA synthesis fragments and any custom payload/orderable fragment, before labelling the design sequence-complete.
+Do not guess the new guide's required inputs or output schema before the file is supplied. The current Primer3 implementation remains the fallback/reference behavior until that integration is completed.
 
-Required behavior:
+### P3. Genotyping-primer CSV — implemented baseline; retain and refine
 
-- evaluate the final post-mutation sequences rather than the reference arms;
-- identify the exact problematic interval and reason, rather than returning only a generic pass/fail;
-- cover synthesis-relevant features such as extreme local/global GC, long homopolymers, direct or inverted repeats, low-complexity sequence, strong secondary-structure/hairpin potential, and other motifs/constraints in the current Twist Bioscience guidance;
-- summarize each orderable fragment as `PASS`, `WARNING`, or `BLOCKED` and show the findings in Streamlit, TXT, and JSON;
-- withhold an order-ready/sequence-complete label when a hard synthesis constraint is violated;
-- where safe, propose alternative synonymous or non-coding mutations, but never silently change a coding sequence, splice-protected base, junction overhang, guide-protection mutation, or payload without rerunning every existing validation gate;
-- retain the vendor/rule-set version and screening date in provenance.
+`genotyping_primers_csv()` already downloads one row per primer with assay, sequence, orientation, source coordinates, length, Tm, GC, structure metrics, expected product sizes, and amplicon sequences.
 
-Do not guess or permanently hard-code Twist thresholds from memory. At implementation time, verify the current official Twist synthesis guidelines and any available screening/API workflow, record the source/version, and keep vendor-specific thresholds configurable. Add deterministic fixtures for every rule so normal vendor/network availability is not required by the test suite.
+Remaining work:
 
-Possible later extension: expose multiple eligible sequence-complexity/SapI fixes for user selection. Until an interactive mutation-choice workflow exists, keep safe changes automatic and make the exact selection rationale visible.
+- align names and ordering columns with the user-supplied primer-generation/order guide;
+- decide whether the detailed genotyping CSV remains a separate file in the ZIP or is accompanied by a smaller vendor-ordering primer CSV;
+- retain the current donor-plasmid absence check and explicit warning that genome-wide uniqueness still requires Primer-BLAST;
+- keep both external genomic primers outside the homology arms and payload primers at least 150 bp from their tested junctions.
 
-### F3. Genotyping primer design — BASELINE IMPLEMENTED IN 0.6.0
+### P4. Single ZIP delivery and simplified download interface — required
 
-Design and report three genotyping PCR assays for every sequence-complete donor design:
+Replace the current collection of individual user-facing downloads with one ZIP archive containing only:
 
-1. **Non-edited/WT locus assay**
-   - Design primers that amplify the non-edited locus across or around the native insertion site.
-   - Prefer a configuration that clearly distinguishes the WT allele from the edited allele by allele specificity or expected amplicon size.
-   - Report whether the edited allele is expected to amplify, and give the expected WT and edited product sizes where applicable.
-2. **5-prime insertion-junction assay**
-   - Use a locus-specific forward primer in genomic sequence on the 5-prime side, preferably outside the UHA so that residual donor plasmid or correctly assembled donor DNA alone cannot produce the expected product.
-   - Use a reverse primer inside the inserted payload.
-   - Because the reverse primer depends only on the payload/backbone architecture, define and validate it once per payload configuration and reuse it across genes using the same targeting backbone where the junction geometry permits.
-3. **3-prime insertion-junction assay**
-   - Use a forward primer inside the inserted payload.
-   - Use a locus-specific reverse primer in genomic sequence on the 3-prime side, preferably outside the DHA.
-   - Because the forward primer depends only on the payload/backbone architecture, define and validate it once per payload configuration and reuse it across genes using the same targeting backbone where the junction geometry permits.
+1. Twist sequence-ordering CSV;
+2. primer-ordering CSV produced through the user-supplied guide/function;
+3. detailed genotyping-primer CSV, unless its relevant metadata is deliberately folded into the primer-ordering CSV;
+4. annotated assembled donor plasmid GenBank;
+5. annotated WT locus GenBank;
+6. annotated edited-locus GenBank.
 
-Required output and validation:
+The three GenBank generators already exist. The WT and edited records must continue to extend 300 bp beyond both homology arms and retain arm, payload/native-junction, and genotyping-primer annotations.
 
-- primer names, sequences (`5' -> 3'`), strand/orientation, genomic or payload coordinates, length, GC percentage, melting temperature, and expected amplicon sequence/size;
-- explicit indication of which primers are locus-specific and which are reusable payload primers;
-- separate predictions for WT and edited alleles, including the reason an assay should or should not amplify each allele;
-- specificity checks against the selected reference genome and against the complete assembled donor plasmid;
-- rejection or warning for problematic homopolymers, repeats, strong self-dimers, cross-dimers, hairpins, extreme GC/Tm, or non-unique genomic binding;
-- primer placement outside the homology arms for external junction primers whenever sequence quality and amplicon-size constraints allow;
-- plus- and minus-strand genes handled without changing the biological 5-prime/3-prime assay definitions;
-- Streamlit display plus TXT, CSV, and JSON exports;
-- configurable target amplicon sizes and PCR/primer constraints, with the rule-set and genome assembly recorded in provenance.
+The other current downloads—TXT report, guide CSV, general FASTA, and full JSON—should be removed from the normal Streamlit download interface. Their generator functions may remain internally if useful for regression testing, diagnostics, or reproducibility, but they are no longer required as user-facing outputs.
 
-Implementation should use the final edited locus and assembled payload sequences, including every automatic SapI and guide-blocking mutation. Reusable payload primers must be keyed to the actual payload definition/version rather than only to a human-readable backbone name. Add regression fixtures for N- and C-terminal designs, both gene strands, WT discrimination, repeated/non-unique genomic primer sites, and custom payloads.
+Use an in-memory ZIP, deterministic filenames, and tests that open the archive and validate the complete expected member list and all CSV/GenBank contents. Preserve the existing no-rerun download behavior and session-state restoration.
+
+### P5. Alternative-guide handling — optional, low priority
+
+The current UI shows multiple ranked candidates but downstream design uses only the top selected guide. Resolve this ambiguity in one of two ways:
+
+- simplest: display/export only the chosen guide; or
+- advanced: allow the user to select another eligible guide and then rerun **all** dependent guide-blocking, arm, payload, plasmid, primer, locus-context, validation, and export calculations.
+
+Do not allow a visual guide choice that leaves outputs generated from a different guide. Until full recalculation is implemented, hiding non-selected guides is safer than presenting them as actionable choices.
 
 ---
 
@@ -84,8 +81,10 @@ Implementation should use the final edited locus and assembled payload sequences
 Development is continuing on the Git branch:
 
 ```text
-feat/custom-payloads-guide-context-genotyping
+main
 ```
+
+The completed feature branches were merged and pushed to `origin/main` in merge commit `9398337` (`merge: HDR designer feature and QC improvements`). Start new work from the current remote `main`; do not continue from the old feature-branch pointers.
 
 Version `0.6.0` retains the automatic-mutation and N/C backbone work from `0.5.1` and adds:
 
@@ -111,7 +110,7 @@ The previous release's behavior remains intact:
 Current validation state:
 
 ```text
-36/36 unittest tests pass
+37/37 unittest tests pass
 Bundled Tubb5 fixture remains sequence-complete
 Exact #169227 Tubb5 sequence/coordinate/plasmid regressions pass unchanged
 Synthetic N-terminal designs pass on plus and minus gene strands
@@ -199,17 +198,19 @@ Important remaining limitation: genome-wide primer uniqueness is not computed lo
 
 The next chunk of work is now:
 
-> Separate payload metadata from backbone configuration, then add payload-only DNA/FASTA input and stronger negative fixtures without regressing either built-in architecture.
+> Consolidate the final laboratory-ordering outputs into vendor-ready CSV files and one ZIP archive, using the user-supplied primer-generation guide when it becomes available.
 
 Recommended sequence:
 
-1. introduce a dedicated serializable `PayloadDefinition` rather than storing tag/linker offsets directly on `BackboneDefinition`;
-2. support payload-only DNA/FASTA input for either N- or C-terminal architecture;
-3. allow GenBank input in addition to SnapGene `.dna`;
-4. add negative fixtures for malformed files, wrong site count/order, residual SapI, frame error, internal stop, missing linker, terminus mismatch, and origin-crossing cassettes;
-5. decide whether origin-crossing circular cassettes should be normalized automatically;
-6. add user-provided payload/tag names and export annotations;
-7. keep the exact #169227 Tubb5 and #169226 N-terminal regression outputs locked.
+1. obtain and read the user-supplied primer-generation guide/function;
+2. verify the current official Twist sequence-upload CSV template;
+3. implement the Twist ordering CSV from final post-mutation sequences;
+4. integrate the supplied primer rules and implement the primer-ordering CSV;
+5. retain/refine the existing detailed genotyping-primer CSV;
+6. package the ordering CSV files and the assembled-plasmid/WT-locus/edited-locus GenBank files into one deterministic in-memory ZIP;
+7. reduce the Streamlit download interface to that ZIP and preserve no-rerun/session-state behavior;
+8. lock ZIP member names and contents with Tubb5 C-terminal and Actb N-terminal regressions;
+9. handle non-selected guides later by either hiding them or implementing full guide selection and downstream recalculation.
 
 Sections later in this document describe the original `0.4.0` roadmap and should be read as historical design context where they conflict with this continuation-status section.
 
@@ -249,7 +250,7 @@ The following choices were explicitly agreed upon:
 - **Validation gene:** mouse **Tubb5**
 - **Validation transcript:** `ENSMUST00000001566`
 - **Custom backbones:** supported for structurally matching circular SnapGene `.dna` files
-- **Custom payload-only input:** next development chunk
+- **Custom payload-only input:** optional later extension; not part of the immediate ordering/export chunk
 - **Blocking mutations:** automatically design verified synonymous coding changes when possible; otherwise block sequence-complete output
 
 ---
@@ -259,7 +260,7 @@ The following choices were explicitly agreed upon:
 The current repository version is:
 
 ```text
-0.6.0 working tree on feat/custom-payloads-guide-context-genotyping
+0.6.0 on main at merge commit 9398337 (pushed to origin/main)
 ```
 
 Main project structure:
@@ -559,12 +560,16 @@ The program currently exports combinations of:
 - homology arms and cloning fragments as FASTA,
 - JSON design data,
 - annotated GenBank assembled plasmid,
+- annotated WT and edited-locus GenBank records with 300-bp external flanks,
+- detailed genotyping-primer CSV with Tm, GC, structure, coordinate, and amplicon metadata,
 - junction sequences,
 - complete homology-arm cloning primers with separately reported SapI/Golden Gate tails and genomic annealing regions.
 
 The Streamlit interface and TXT report also include SapI quality control: total/per-arm counts, every original motif and coordinate, resolution status, exact nucleotide/codon change, protein consequence, and selection reason.
 
 Version 0.6.0 appends Primer3-evaluated, arm-end genomic annealing regions to all four fixed Bollen cloning tails. The UI colors tails and annealing regions separately and provides a copyable complete sequence. If a required donor mutation lies internally, outside both endpoint-primer footprints, the app warns that endpoint PCR alone cannot create the final arm and that synthesis or an additional mutagenesis strategy is required.
+
+The next export revision intentionally replaces these many user-facing downloads with the single ZIP described in P4. Do not remove the underlying generators until the ZIP tests cover the information that must be retained.
 
 ---
 
@@ -1134,21 +1139,21 @@ Coverage present in the 28-test `0.4.0` suite:
 - exact fixed plasmid assembly, zero residual SapI sites, fusion translation, and GenBank round trip;
 - SapI quality-control summaries for resolved and unresolved sites.
 
-Still needed, especially for the next chunk:
+Additional tests still useful after the ordering/export chunk:
 
-1. minus-strand N-terminal preview;
-2. no NGG guide within the default window;
-3. alternative transcript with a different terminal exon;
-4. retired/archive transcript ID;
-5. malformed custom `.dna` file;
-6. malformed or annotation-poor GenBank/FASTA uploads;
-7. custom backbone with incorrect site count or overhang order;
-8. duplicate/non-unique assembly overhangs;
-9. custom payload with frame error or internal stop;
-10. custom payload containing SapI;
-11. deliberately residual SapI site in a generalized final plasmid;
-12. deliberate final fusion translation mismatch;
-13. built-in backbone through generic configuration produces an identical fixed result.
+1. no NGG guide within the default window;
+2. alternative transcript with a different terminal exon;
+3. retired/archive transcript ID;
+4. malformed custom `.dna` file;
+5. malformed or annotation-poor GenBank/FASTA uploads;
+6. custom backbone with incorrect site count or overhang order;
+7. duplicate/non-unique assembly overhangs;
+8. custom payload containing SapI;
+9. deliberately residual SapI site in a generalized final plasmid;
+10. deliberate final fusion translation mismatch;
+11. Twist CSV schema and sequence/checksum fixtures;
+12. primer-ordering CSV fixtures after the user guide is supplied;
+13. deterministic ZIP member-list and content validation.
 
 For sequence-critical code, tests should assert exact sequences and coordinates, not only that a result object was returned.
 
@@ -1165,19 +1170,22 @@ Completed in the current repository:
 - [x] generalize coding SapI domestication;
 - [x] implement automatic synonymous guide blocking;
 - [x] add user-facing SapI site/mutation quality control.
+- [x] add N- and C-terminal backbones plus complex custom-cassette handling;
+- [x] add complete guide-context comparison and annotated WT/edited locus records;
+- [x] add homology-arm cloning primers and three genotyping assays;
+- [x] add detailed genotyping-primer CSV and three GenBank generators;
+- [x] preserve completed results across downloads/reruns.
 
 Recommended next order:
 
-1. add `BackboneDefinition`, `PayloadDefinition`, and `AssemblyJunction` models;
-2. express Addgene #169227 and its fixed payload using those models;
-3. route the existing fixed assembler through the configuration layer and prove exact regression equivalence;
-4. add normalized SnapGene/GenBank/FASTA upload parsing with file limits and clean errors;
-5. add the custom-backbone configuration and QC panel, initially releasing SapI configurations only;
-6. add custom DNA/FASTA payload configuration and junction/translation validation;
-7. add custom-backbone/payload failure fixtures from section 21;
-8. continue transcript-selection UI, caching, and archive/local-sequence fallbacks;
-9. add a validated N-terminal backbone;
-10. add locus-specific primer design.
+1. wait for and read the user-supplied primer-generation guide/function;
+2. verify the official Twist ordering CSV schema;
+3. implement the Twist sequence-ordering CSV;
+4. implement the primer-ordering CSV and align the detailed genotyping CSV;
+5. build the deterministic final ZIP with ordering CSVs plus the three GenBank records;
+6. replace the current user-facing downloads with the ZIP;
+7. add Tubb5 and Actb archive-content regressions;
+8. later hide non-selected guides or implement safe full guide selection/recalculation.
 
 Commands:
 
@@ -1234,11 +1242,15 @@ The current version should be considered:
 
 > A sequence-complete N- and C-terminal prototype for reference-based tagging of mouse or human protein-coding transcripts using Bollen/Addgene #169226 or #169227, with a guarded custom SnapGene-backbone path for the same SapI/linker architectures. It automatically applies verified synonymous guide-blocking plus synonymous-coding or guarded non-coding SapI-domestication mutations, exposes those decisions for quality control, and withholds sequence-complete output when no safe automatic solution exists.
 
-The next major extensibility objective is:
+The next delivery objective is:
 
-1. **split the current generic `BackboneDefinition` into clean serializable backbone and payload definitions;**
-2. **add custom DNA/FASTA payload-only input and user tag metadata;**
-3. **add GenBank backbone input, comprehensive negative fixtures, and optional circular-origin normalization.**
+1. **export final synthesis sequences in the verified Twist CSV schema;**
+2. **integrate the forthcoming user-supplied primer-generation guide and emit a primer-ordering CSV;**
+3. **retain the detailed genotyping-primer CSV;**
+4. **deliver those ordering CSVs and the assembled-plasmid, WT-locus, and edited-locus GenBank records in one ZIP;**
+5. **remove the other download buttons from the normal interface.**
+
+Payload-only FASTA input, GenBank backbone input, origin normalization, and richer payload metadata remain possible later extensions but are no longer the immediate next chunk.
 
 Preserve these invariants throughout that work:
 
