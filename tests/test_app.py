@@ -32,6 +32,25 @@ class StreamlitAppTest(unittest.TestCase):
         self.assertEqual(metrics["Arm SapI sites remaining"], "0")
         self.assertEqual(len(app.get("download_button")), 5)
 
+    def test_n_terminal_selection_uses_169226_and_disables_fixture(self) -> None:
+        app_path = Path(__file__).resolve().parents[1] / "app.py"
+        app = AppTest.from_file(str(app_path), default_timeout=20).run()
+        app.selectbox[1].select("N-terminal").run()
+        self.assertEqual(len(app.exception), 0)
+        text_inputs = {item.label: item for item in app.text_input}
+        self.assertEqual(
+            text_inputs["Selected backbone"].value,
+            "TVBB N-term-mNeongreen (Addgene #169226)",
+        )
+        fixture = next(
+            item
+            for item in app.checkbox
+            if item.label == "Use bundled Tubb5 validation fixture"
+        )
+        self.assertFalse(fixture.value)
+        self.assertTrue(fixture.disabled)
+        self.assertFalse(text_inputs["3. Gene symbol or Ensembl gene ID"].disabled)
+
 
 if __name__ == "__main__":
     unittest.main()

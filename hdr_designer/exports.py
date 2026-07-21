@@ -99,7 +99,7 @@ def arms_fasta(result: DesignResult) -> str:
     if payload:
         records.append(
             fasta_record(
-                f"Addgene_{result.backbone_addgene_id}_GGGGSAS_mNeonGreen_stop_payload",
+                f"Addgene_{result.backbone_addgene_id}_{result.terminus.replace('-', '_')}_payload",
                 str(payload),
             )
         )
@@ -116,7 +116,9 @@ def arms_fasta(result: DesignResult) -> str:
     if plasmid:
         records.append(
             fasta_record(
-                f"{result.gene_symbol}_C_terminal_mNeonGreen_Addgene_169227_assembled_circular_plasmid",
+                f"{result.gene_symbol}_{result.terminus.replace('-', '_')}_"
+                f"{str(result.donor_payload.get('tag_name', 'tag')).replace(' ', '_')}_"
+                f"Addgene_{result.backbone_addgene_id}_assembled_circular_plasmid",
                 str(plasmid),
             )
         )
@@ -137,8 +139,9 @@ def assembled_plasmid_genbank(result: DesignResult) -> str:
         id=f"{result.gene_symbol}_mNG_HDR",
         name=f"{result.gene_symbol}_mNG_HDR"[:16],
         description=(
-            f"Simulated SapI Golden Gate assembly: {result.gene_symbol} C-terminal "
-            f"GGGGSAS-mNeonGreen donor in Addgene #{result.backbone_addgene_id}"
+            f"Simulated SapI Golden Gate assembly: {result.gene_symbol} {result.terminus} "
+            f"{result.donor_payload.get('tag_name', 'tag')} donor in "
+            f"{result.backbone_name}"
         ),
     )
     record.annotations.update(
@@ -151,8 +154,9 @@ def assembled_plasmid_genbank(result: DesignResult) -> str:
             "organism": "synthetic DNA construct",
             "taxonomy": ["other sequences", "artificial sequences"],
             "comment": (
-                "Computational prototype output. Generated from the uploaded Addgene #169227 "
-                "SnapGene sequence and Bollen supplementary SapI adapter rules. Independently "
+                f"Computational prototype output. Generated from the uploaded Addgene "
+                f"#{result.backbone_addgene_id} SnapGene sequence and Bollen supplementary "
+                "SapI adapter rules. Independently "
                 "verify before experimental use."
             ),
         }
@@ -182,10 +186,14 @@ def assembled_plasmid_genbank(result: DesignResult) -> str:
         note = item.get("note")
         if note:
             qualifiers["note"] = [str(note)]
-        if item.get("type") == "CDS" and "mNeonGreen" in str(item.get("label", "")):
+        tag_name = str(result.donor_payload.get("tag_name", "mNeonGreen"))
+        if item.get("type") == "CDS" and str(item.get("label", "")) in {
+            tag_name,
+            f"{tag_name} + stop",
+        }:
             qualifiers.update(
                 {
-                    "product": ["mNeonGreen"],
+                    "product": [tag_name],
                     "codon_start": ["1"],
                     "transl_table": ["1"],
                     "translation": [str(result.donor_payload.get("tag_peptide", ""))],
@@ -446,6 +454,11 @@ def _arm_report(arm: HomologyArm) -> list[str]:
 
 def design_report(result: DesignResult) -> str:
     top = result.top_guide if result.guides else None
+    backbone_identifier = (
+        f"Addgene #{result.backbone_addgene_id}"
+        if result.backbone_addgene_id != "custom"
+        else "user-supplied backbone"
+    )
     lines: list[str] = [
         "HDR TAG DESIGNER - COMPUTATIONAL DESIGN REPORT",
         "=" * 58,
@@ -458,11 +471,11 @@ def design_report(result: DesignResult) -> str:
         f"Locus: chr{result.chromosome}, gene strand {result.gene_strand}",
         f"Tagging mode: {result.terminus}",
         f"Nuclease: {result.nuclease_mode}",
-        f"Backbone: {result.backbone_name}, Addgene #{result.backbone_addgene_id}",
+        f"Backbone: {result.backbone_name}, {backbone_identifier}",
         f"Homology arms: {result.homology_arm_length} bp each",
         "Off-target analysis: not performed (requested)",
         f"Guide-ranking note: {result.guide_scoring_note}",
-        "Custom donor backbone support: deferred until after this validation test",
+        f"Custom donor backbone support: {'enabled' if result.custom_backbones_supported else 'disabled'}",
         "",
         "EDIT DEFINITION",
         "-" * 58,
@@ -475,7 +488,7 @@ def design_report(result: DesignResult) -> str:
             else "Removed genomic interval: none"
         ),
         f"Removed gene-oriented sequence: {result.removed_sequence_gene_oriented or '(none)'}",
-        f"Endogenous coding sequence before tag: {result.cds_length_without_stop} nt / {result.protein_length_aa} aa",
+        f"Native coding sequence without terminal stop: {result.cds_length_without_stop} nt / {result.protein_length_aa} aa",
         "",
         "SELECTED GUIDE",
         "-" * 58,
@@ -523,13 +536,15 @@ def design_report(result: DesignResult) -> str:
     lines.extend(_arm_report(result.three_prime_arm))
 
     if result.donor_payload:
-        lines.extend(["", "FIXED DONOR PAYLOAD", "-" * 58])
+        lines.extend(["", "DONOR PAYLOAD", "-" * 58])
         lines.extend(
             [
                 f"Name: {result.donor_payload.get('name')}",
                 f"Payload length: {result.donor_payload.get('payload_length_nt')} nt",
                 f"Linker: {result.donor_payload.get('linker_coding_sequence')} / {result.donor_payload.get('linker_peptide')}",
-                f"mNeonGreen coding region: {result.donor_payload.get('tag_length_nt')} nt / {result.donor_payload.get('tag_length_aa')} aa",
+                f"{result.donor_payload.get('tag_name', 'Tag')} coding region: "
+                f"{result.donor_payload.get('tag_length_nt')} nt / "
+                f"{result.donor_payload.get('tag_length_aa')} aa",
                 f"Payload stop codon: {result.donor_payload.get('stop_codon')}",
                 "Payload sequence (5'->3'):",
                 _indent(wrap_sequence(str(result.donor_payload.get('payload_sequence_5to3', '')))),
@@ -563,12 +578,12 @@ def design_report(result: DesignResult) -> str:
         if backbone:
             lines.extend(
                 [
-                    "Uploaded fixed-backbone verification:",
+                    "Uploaded backbone verification:",
                     f"  File: {backbone.get('snapgene_file')}",
                     f"  SHA-256: {backbone.get('snapgene_sha256')}",
                     f"  Original plasmid: {backbone.get('length_nt')} bp, {backbone.get('topology')}",
                     f"  SapI sites: {backbone.get('sapi_site_count')}",
-                    f"  Backbone payload matches Bollen S2: {backbone.get('payload_matches_bollen_s2')}",
+                    f"  Backbone payload passed sequence checks: {backbone.get('payload_sequence_verified')}",
                     f"  Simulated final plasmid: {result.cloning_fragments.get('assembled_plasmid_length_nt')} bp, circular",
                     f"  SapI sites in final circular plasmid: {result.cloning_fragments.get('assembled_plasmid_sapi_site_count')}",
                 ]

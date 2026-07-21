@@ -6,6 +6,18 @@ import unittest
 
 from Bio import SeqIO
 
+from hdr_designer.backbones import (
+    BACKBONE_DNA,
+    NTERM_BACKBONE_DNA,
+    NTERM_DHA_PREFIX,
+    NTERM_DHA_SUFFIX,
+    NTERM_UHA_PREFIX,
+    NTERM_UHA_SUFFIX,
+    backbone_metadata_for,
+    infer_custom_backbone_definition,
+    n_terminal_backbone_analysis,
+    NTERM_BACKBONE,
+)
 from hdr_designer.design import design_online
 from hdr_designer.ensembl import SPECIES
 from hdr_designer.exports import (
@@ -15,7 +27,7 @@ from hdr_designer.exports import (
     sapi_qc_rows,
 )
 from hdr_designer.models import Exon, TranscriptRecord
-from hdr_designer.sequence import reverse_complement
+from hdr_designer.sequence import reverse_complement, translate
 
 
 class SyntheticEnsemblClient:
@@ -190,20 +202,154 @@ class OnlineDesignPathTest(unittest.TestCase):
                     0,
                 )
 
-    def test_n_terminal_path_is_explicit_preview(self) -> None:
+    def test_n_terminal_path_is_sequence_complete(self) -> None:
+        client = SyntheticEnsemblClient("human")
+        result = design_online(
+            species_key="human",
+            gene="MockTagGene",
+            terminus="N-terminal",
+            client=client,
+        )
+        self.assertTrue(result.sequence_complete)
+        self.assertEqual(result.status, "SEQUENCE-COMPLETE COMPUTATIONAL DESIGN")
+        self.assertEqual(result.backbone_addgene_id, "169226")
+        self.assertEqual(result.donor_payload["payload_length_nt"], 726)
+        self.assertEqual(result.donor_payload["tag_length_aa"], 235)
+        self.assertEqual(result.donor_payload["linker_peptide"], "GGGGSAS")
+        self.assertEqual(result.donor_payload["stop_codon"], "")
+        self.assertEqual(result.fusion_protein_length_aa, result.protein_length_aa + 242)
+        native_protein = translate(client.record.cds[:-3])
+        payload_peptide = str(result.donor_payload["payload_peptide"])
+        self.assertEqual(
+            result.fusion_protein_sequence,
+            native_protein[:1] + payload_peptide + native_protein[1:],
+        )
+        guide = result.top_guide.target_with_pam
+        five = result.five_prime_arm.final_gene_oriented_sequence
+        three = result.three_prime_arm.final_gene_oriented_sequence
+        self.assertEqual(
+            result.cloning_fragments["uha_synthesis_fragment_5to3"],
+            NTERM_UHA_PREFIX + guide + five + NTERM_UHA_SUFFIX,
+        )
+        self.assertEqual(
+            result.cloning_fragments["dha_synthesis_fragment_5to3"],
+            NTERM_DHA_PREFIX + three + guide + NTERM_DHA_SUFFIX,
+        )
+        self.assertEqual(
+            result.cloning_fragments["expected_sapi_overhangs"],
+            {
+                "vector_to_uha": "TAC",
+                "uha_to_payload": "GTG",
+                "payload_to_dha": "AGC",
+                "dha_to_vector": "AAT",
+            },
+        )
+        self.assertEqual(result.cloning_fragments["assembled_plasmid_length_nt"], 3947)
+        self.assertEqual(result.cloning_fragments["assembled_plasmid_sapi_site_count"], 0)
+        coordinates = result.cloning_fragments["assembly_coordinate_map"]
+        self.assertEqual((coordinates["donor_start0"], coordinates["donor_end0"]), (1085, 3057))
+        self.assertEqual(
+            (coordinates["tag_start0"], coordinates["tag_end0"]),
+            (1708, 2413),
+        )
+        self.assertEqual(
+            (coordinates["linker_start0"], coordinates["linker_end0"]),
+            (2413, 2434),
+        )
+        plasmid = result.cloning_fragments["assembled_plasmid_5to3"]
+        self.assertEqual(plasmid[1082:1085], "TAC")
+        self.assertEqual(plasmid[3057:3060], "AAT")
+        self.assertEqual(
+            result.primer_tail_templates["UHA_reverse_5prime_tail"],
+            "CGCGCTCTTCACAC",
+        )
+        self.assertEqual(
+            result.primer_tail_templates["UHA_forward_5prime_tail"],
+            "AACGCTCTTCATAC" + guide,
+        )
+        self.assertEqual(
+            result.primer_tail_templates["DHA_forward_5prime_tail"],
+            "CGCGCTCTTCGAGC",
+        )
+        self.assertEqual(
+            result.primer_tail_templates["DHA_reverse_5prime_tail"],
+            "AACGCTCTTCGATT" + reverse_complement(guide),
+        )
+        genbank = SeqIO.read(StringIO(assembled_plasmid_genbank(result)), "genbank")
+        labels = {
+            feature.qualifiers.get("label", [""])[0]
+            for feature in genbank.features
+        }
+        self.assertIn("mNeonGreen", labels)
+        self.assertIn("GGGGSAS linker", labels)
+
+    def test_n_terminal_backbone_sequence_and_sapi_architecture(self) -> None:
+        self.assertTrue(NTERM_BACKBONE_DNA.is_file())
+        metadata = backbone_metadata_for(NTERM_BACKBONE)
+        self.assertEqual(metadata["length_nt"], 2765)
+        self.assertEqual(
+            metadata["snapgene_sha256"],
+            "75d9d25b4dac8083c401ee5ac76b080a5f62e42d23357a81b4ac33e84a434177",
+        )
+        self.assertEqual(
+            [site["overhang_5to3"] for site in metadata["sapi_sites"]],
+            ["TAC", "GTG", "AGC", "AAT"],
+        )
+        analysis = n_terminal_backbone_analysis()
+        self.assertEqual(
+            (
+                analysis.vector_left_cut0,
+                analysis.payload_start0,
+                analysis.payload_end0,
+                analysis.vector_right_cut0,
+            ),
+            (1082, 1117, 1840, 1875),
+        )
+        self.assertEqual(len(analysis.payload_core_sequence), 723)
+        self.assertEqual(len(analysis.payload_sequence), 726)
+
+    def test_reverse_strand_n_terminal_path_is_sequence_complete(self) -> None:
+        result = design_online(
+            species_key="mouse",
+            gene="MockTagGene",
+            terminus="N-terminal",
+            client=SyntheticEnsemblClient("mouse", strand=-1),
+        )
+        self.assertTrue(result.sequence_complete)
+        self.assertEqual(result.gene_strand, "-")
+        self.assertEqual(result.backbone_addgene_id, "169226")
+        self.assertEqual(result.cloning_fragments["assembled_plasmid_length_nt"], 3947)
+
+    def test_uploaded_backbone_is_classified_and_assembled_from_sapi_sites(self) -> None:
+        custom = infer_custom_backbone_definition(NTERM_BACKBONE_DNA)
+        self.assertTrue(custom.is_custom)
+        self.assertEqual(custom.terminus, "N-terminal")
+        self.assertEqual(custom.payload_length_nt, 726)
         result = design_online(
             species_key="human",
             gene="MockTagGene",
             terminus="N-terminal",
             client=SyntheticEnsemblClient("human"),
+            backbone_definition=custom,
         )
-        self.assertFalse(result.sequence_complete)
-        self.assertEqual(result.status, "REVIEW REQUIRED")
-        self.assertIn("uha_synthesis_fragment_preview_5to3", result.cloning_fragments)
-        self.assertNotIn("assembled_plasmid_5to3", result.cloning_fragments)
-        self.assertTrue(
-            any("N-terminal output is a locus-design preview" in warning for warning in result.warnings)
+        self.assertTrue(result.sequence_complete)
+        self.assertEqual(result.backbone_addgene_id, "custom")
+        self.assertEqual(
+            result.cloning_fragments["expected_sapi_overhangs"],
+            custom.overhangs,
         )
+        self.assertEqual(result.cloning_fragments["assembled_plasmid_length_nt"], 3947)
+
+        custom_c = infer_custom_backbone_definition(BACKBONE_DNA)
+        self.assertEqual(custom_c.terminus, "C-terminal")
+        c_result = design_online(
+            species_key="human",
+            gene="MockTagGene",
+            client=SyntheticEnsemblClient("human"),
+            backbone_definition=custom_c,
+        )
+        self.assertTrue(c_result.sequence_complete)
+        self.assertEqual(c_result.cloning_fragments["assembled_plasmid_length_nt"], 3950)
 
     def test_synonymous_pam_blocking_mutation_is_applied(self) -> None:
         result = design_online(

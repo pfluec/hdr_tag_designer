@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from pathlib import Path
+import tempfile
 from typing import Any
 
 import pandas as pd
 import streamlit as st
 
 from hdr_designer.design import DesignError, design_online, design_tubb5_fixture
+from hdr_designer.backbones import backbone_for_terminus, infer_custom_backbone_definition
 from hdr_designer.ensembl import EnsemblError, SPECIES
 from hdr_designer.exports import (
     arms_fasta,
@@ -18,8 +21,9 @@ from hdr_designer.exports import (
     sapi_qc_rows,
 )
 from hdr_designer.models import DesignResult, HomologyArm
+from hdr_designer.snapgene import SnapGeneError
 
-APP_VERSION = "0.4.0"
+APP_VERSION = "0.5.0"
 
 
 def _download_buttons(result: DesignResult) -> None:
@@ -181,7 +185,10 @@ def _show_result(result: DesignResult) -> None:
         st.markdown("### Fixed donor payload")
         payload_cols = st.columns(4)
         payload_cols[0].metric("Linker", str(result.donor_payload.get("linker_peptide", "")))
-        payload_cols[1].metric("mNeonGreen", f"{result.donor_payload.get('tag_length_aa', 0)} aa")
+        payload_cols[1].metric(
+            str(result.donor_payload.get("tag_name", "Tag")),
+            f"{result.donor_payload.get('tag_length_aa', 0)} aa",
+        )
         payload_cols[2].metric("Payload coding", f"{result.donor_payload.get('payload_coding_length_nt', 0)} nt")
         payload_cols[3].metric("Stop", str(result.donor_payload.get("stop_codon", "")))
         with st.expander("Payload sequence"):
@@ -222,7 +229,7 @@ def _show_result(result: DesignResult) -> None:
             cols[1].metric("Input SapI sites", str(backbone.get("sapi_site_count")))
             cols[2].metric("Final plasmid", f"{result.cloning_fragments.get('assembled_plasmid_length_nt')} bp")
             cols[3].metric("Final SapI sites", str(result.cloning_fragments.get("assembled_plasmid_sapi_site_count")))
-            cols[4].metric("Payload = S2", "yes" if backbone.get("payload_matches_bollen_s2") else "no")
+            cols[4].metric("Payload verified", "yes" if backbone.get("payload_sequence_verified") else "no")
             st.caption(
                 f"Parsed {backbone.get('snapgene_file')} | SHA-256 {backbone.get('snapgene_sha256')}"
             )
@@ -287,7 +294,7 @@ def main() -> None:
     st.title("HDR Tag Designer")
     st.caption(
         f"Bollen-style ITPN gene-tagging prototype using SpCas9 D10A. Version {APP_VERSION} "
-        "adds verified synonymous guide blocking and SapI domestication to the fixed-backbone workflow."
+        "adds complete N- and C-terminal transfer-vector assembly."
     )
     st.info(
         "Species is the first design choice. The bundled Tubb5 test is reproducible offline; "
@@ -302,28 +309,32 @@ def main() -> None:
             format_func=lambda key: f"{SPECIES[key].label} - {SPECIES[key].assembly}",
             index=0,
         )
+        terminus = st.selectbox("2. Tagging terminus", ["C-terminal", "N-terminal"], index=0)
         if species_key == "mouse":
+            if not terminus.startswith("C"):
+                st.session_state["use_tubb5_fixture"] = False
             use_fixture = st.checkbox(
                 "Use bundled Tubb5 validation fixture",
-                value=True,
+                value=terminus.startswith("C"),
                 key="use_tubb5_fixture",
+                disabled=not terminus.startswith("C"),
                 help=(
                     "Offline C-terminal Tubb5-201 test with 600-bp arms. "
                     "The bundled transcript is ENSMUST00000001566.10."
                 ),
-            )
+            ) and terminus.startswith("C")
         else:
             use_fixture = False
             st.caption("The bundled offline fixture is mouse-only; human designs use live Ensembl.")
 
         gene = st.text_input(
-            "2. Gene symbol or Ensembl gene ID",
+            "3. Gene symbol or Ensembl gene ID",
             value="Tubb5" if species_key == "mouse" else "TUBB5",
             key=f"gene_{species_key}",
             disabled=use_fixture,
         )
         transcript_id = st.text_input(
-            "3. Transcript ID (optional)",
+            "4. Transcript ID (optional)",
             value="ENSMUST00000001566.10" if use_fixture else "",
             key=f"transcript_{species_key}_{'fixture' if use_fixture else 'live'}",
             disabled=use_fixture,
@@ -333,12 +344,28 @@ def main() -> None:
                 else "Blank uses the live Ensembl canonical transcript."
             ),
         )
-        terminus = st.selectbox("4. Tagging terminus", ["C-terminal", "N-terminal"], index=0)
-        st.text_input(
+        selected_backbone = backbone_for_terminus(terminus)
+        backbone_mode = st.radio(
             "5. Donor backbone",
-            value="TVBB C-term-mNeongreen (Addgene #169227)",
-            disabled=True,
+            ["Verified built-in", "Upload custom .dna"],
+            horizontal=True,
         )
+        custom_backbone_upload = None
+        if backbone_mode == "Verified built-in":
+            st.text_input(
+                "Selected backbone",
+                value=f"{selected_backbone.name} (Addgene #{selected_backbone.addgene_id})",
+                disabled=True,
+            )
+        else:
+            custom_backbone_upload = st.file_uploader(
+                "Custom SnapGene backbone",
+                type=["dna"],
+                help=(
+                    "Must be circular and retain exactly four SapI sites in the Bollen "
+                    "N- or C-terminal overhang order plus the GGGGSAS linker."
+                ),
+            )
         arm_length = st.number_input(
             "6. Homology arm length (bp)", 100, 2000, 600, 50
         )
@@ -350,17 +377,36 @@ def main() -> None:
     st.markdown("#### Scope of this version")
     st.write(
         "ITPN / SpCas9 D10A; mouse GRCm39 or human GRCh38; reference sequence only; "
-        "fixed Addgene #169227 C-terminal mNeonGreen payload; automatic synonymous coding "
-        "mutations with noncoding cases held for review; custom backbones deferred."
+        "verified Addgene #169226 N-terminal and #169227 C-terminal mNeonGreen backbones, "
+        "plus structurally validated custom SnapGene backbones; "
+        "automatic synonymous coding mutations with noncoding cases held for review."
     )
 
     if not run:
         st.write("Use the default settings and click **Design locus** to run the Tubb5 test.")
         return
 
+    temporary_backbone_path: Path | None = None
     try:
         with st.spinner("Building and validating design..."):
+            design_backbone = selected_backbone
+            if backbone_mode == "Upload custom .dna":
+                if custom_backbone_upload is None:
+                    raise DesignError("Upload a custom SnapGene .dna backbone before designing.")
+                with tempfile.NamedTemporaryFile(
+                    prefix="hdr_tag_custom_", suffix=".dna", delete=False
+                ) as handle:
+                    handle.write(custom_backbone_upload.getvalue())
+                    temporary_backbone_path = Path(handle.name)
+                design_backbone = infer_custom_backbone_definition(temporary_backbone_path)
+                if design_backbone.terminus != terminus:
+                    raise DesignError(
+                        f"The uploaded SapI architecture is {design_backbone.terminus}, "
+                        f"but {terminus} tagging was selected."
+                    )
             if use_fixture:
+                if backbone_mode != "Verified built-in":
+                    raise DesignError("The bundled Tubb5 fixture uses the verified built-in backbone.")
                 if species_key != "mouse" or gene.strip().casefold() != "tubb5":
                     raise DesignError("The bundled fixture is fixed to mouse Tubb5.")
                 if not terminus.startswith("C") or int(arm_length) != 600:
@@ -376,10 +422,14 @@ def main() -> None:
                     terminus=terminus,
                     arm_length=int(arm_length),
                     guide_window=int(guide_window),
+                    backbone_definition=design_backbone,
                 )
-    except (DesignError, EnsemblError, ValueError) as exc:
+    except (DesignError, EnsemblError, SnapGeneError, ValueError) as exc:
         st.error(str(exc))
         st.stop()
+    finally:
+        if temporary_backbone_path is not None and temporary_backbone_path.exists():
+            temporary_backbone_path.unlink()
 
     st.session_state["latest_design"] = result
     _show_result(result)

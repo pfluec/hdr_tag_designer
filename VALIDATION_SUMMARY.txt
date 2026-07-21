@@ -1,13 +1,13 @@
-HDR TAG DESIGNER v0.4.0 - VALIDATION SUMMARY
+HDR TAG DESIGNER v0.5.0 - VALIDATION SUMMARY
 Generated: 2026-07-21
 
 SCOPE
 - Local Streamlit prototype for Bollen-style ITPN with SpCas9 D10A.
 - Species is the first input: mouse GRCm39 or human GRCh38.
-- Fixed donor in this version: Addgene #169227, C-terminal GGGGSAS-mNeonGreen-stop.
+- Built-in donors: Addgene #169226 N-terminal mNeonGreen-GGGGSAS and #169227 C-terminal GGGGSAS-mNeonGreen-stop.
 - Reference sequence only; no genome-wide off-target analysis.
-- Custom donor backbones/tags are intentionally deferred.
-- N-terminal mode currently produces a locus/arm/guide preview; full cloning is C-terminal only for the supplied backbone.
+- Circular custom SnapGene backbones are supported when they retain one exact Bollen SapI/linker architecture and pass frame/stop/topology validation.
+- N-terminal mode produces full fragments, fusion translation, circular plasmid assembly, GenBank, FASTA, JSON, and TXT output.
 - Live coding designs automatically search verified synonymous guide-blocking and SapI-domestication changes; noncoding/unsafe cases remain blocked.
 - Guide proximity remains the primary ranking criterion even when the nearer guide needs a synonymous blocking change.
 
@@ -48,12 +48,21 @@ UPLOADED BACKBONE CHECK
 - Observed overhang order: TAC, GGC, TGA, AAT.
 - Reconstructed 729-bp linker-mNeonGreen-stop payload matches the bundled Bollen S2 sequence: True.
 
+N-TERMINAL BACKBONE CHECK
+- Parsed file: addgene-169226.dna.
+- SHA-256: 75d9d25b4dac8083c401ee5ac76b080a5f62e42d23357a81b4ac33e84a434177.
+- Input length/topology: 2765 bp / circular.
+- SapI sites/overhang order: 4 / TAC, GTG, AGC, AAT.
+- Reconstructed payload: 726 bp, 235-aa mNeonGreen followed by GGGGSAS, no stop.
+- Standard 600-bp-arm donor/final plasmid: 1972 bp / 3947 bp; zero residual SapI sites.
+
 AUTOMATED VALIDATION
-- Unit/integration tests: 28 passed.
+- Unit/integration tests: 32 passed.
 - Streamlit AppTest: passed.
 - Streamlit local server health endpoint: ok; root returned HTTP 200.
 - Generic mouse and human C-terminal code paths: passed with deterministic synthetic Ensembl client.
-- N-terminal preview path: passed with deterministic synthetic Ensembl client.
+- N-terminal plus- and minus-strand complete paths: passed with deterministic synthetic Ensembl client.
+- Custom `.dna` inference and complete C/N assembly: passed using both verified Addgene fixtures.
 - Generic synonymous PAM blocking, seed blocking, single/multiple SapI domestication, plus/minus strand mapping, unsafe-case refusal, and mutation export propagation: passed.
 - SapI quality-control panel and report summary: total/per-arm counts, site coordinates, mutation/codon details, protein consequence, and unresolved-site status passed.
 - Ensembl bounded retries for HTTP 429/5xx/network failures and explicit transcript-parent validation: passed.

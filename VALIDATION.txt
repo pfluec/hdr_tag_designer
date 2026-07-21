@@ -1,15 +1,16 @@
-HDR TAG DESIGNER v0.4.0 - VALIDATION RECORD
+HDR TAG DESIGNER v0.5.0 - VALIDATION RECORD
 =======================================================
 
 Validation date: 2026-07-21
-Scope: fixed Addgene #169227 C-terminal mNeonGreen workflow with generic synonymous guide blocking and SapI domestication; custom backbones/tags deferred.
+Scope: complete Addgene #169226 N-terminal and #169227 C-terminal workflows, generic synonymous mutations, and structurally validated custom SnapGene backbones.
 
 AUTOMATED TESTS
 -------------------------------------------------------
-PASS: 28/28 Python unit/integration tests.
+PASS: 32/32 Python unit/integration tests.
 PASS: Streamlit default Tubb5 workflow via streamlit.testing.v1.AppTest.
 PASS: mocked live-design code paths for mouse GRCm39 and human GRCh38.
-PASS: N-terminal code path is explicitly limited to a locus-design preview with this C-terminal backbone.
+PASS: N-terminal plus- and minus-strand paths produce complete synthesis fragments, fusion translations, and circular plasmids.
+PASS: Custom `.dna` classification and full N/C assembly paths pass using both Addgene files as deterministic fixtures.
 PASS: headless Streamlit health endpoint returned ok.
 PASS: Python bytecode compilation for app, package, scripts, and tests.
 
@@ -43,6 +44,17 @@ SapI overhang order: TAC -> GGC -> TGA -> AAT
 Payload reconstructed from .dna: 729 bp
 Payload equals Bollen supplementary S2 sequence: True
 
+N-TERMINAL BACKBONE
+-------------------------------------------------------
+File: addgene-169226.dna
+SHA-256: 75d9d25b4dac8083c401ee5ac76b080a5f62e42d23357a81b4ac33e84a434177
+Length/topology: 2765 bp / circular
+SapI sites/overhang order: 4 / TAC -> GTG -> AGC -> AAT
+Payload reconstructed from .dna: 726 bp (mNeonGreen-GGGGSAS, no stop)
+Standard 600-bp-arm donor/final plasmid: 1972 bp / 3947 bp
+Residual SapI sites in simulated plasmid: 0
+Plus- and minus-strand sequence-complete tests: PASS
+
 TUBB5 COMPUTATIONAL TEST
 -------------------------------------------------------
 Reference: mouse GRCm39/mm39; Tubb5-201; ENSMUST00000001566.10; reverse strand.
@@ -60,11 +72,11 @@ GenBank round trip: PASS (3950 bp, 19 annotated features, topology circular).
 
 GENERATED OUTPUTS
 -------------------------------------------------------
-outputs/tubb5_test/Tubb5_C_terminal_design_report.txt | 31644 bytes | SHA-256 557342034d8a732dc2f1096fff582bfb390e31f5d06599cc2a69a188356c0640
+outputs/tubb5_test/Tubb5_C_terminal_design_report.txt | 31713 bytes | SHA-256 d657702763659d340d4af66a1cbd1859437ef01902e6f508b3c3b29be71a3491
 outputs/tubb5_test/Tubb5_guides.csv | 9311 bytes | SHA-256 6b86497c840a1ad43011f658cd8f3fa5b677ff7bd3018765d6eaf27359b40a3d
-outputs/tubb5_test/Tubb5_homology_arms.fasta | 13915 bytes | SHA-256 6bb81f8ebe0bfb688a76d8561568205548412fc1c511f4549235fead5b5b910f
-outputs/tubb5_test/Tubb5_design.json | 53697 bytes | SHA-256 a425ab42c4b212947e9938be21f4e1cbec03d120986b0215ac3003d235094a5d
-outputs/tubb5_test/Tubb5_C_terminal_mNeonGreen_assembled_plasmid.gb | 9531 bytes | SHA-256 42878c1f8f50dfd8ccba15ce3e35ad9b5ced74aafbff46cfb0fd8023116af314
+outputs/tubb5_test/Tubb5_homology_arms.fasta | 13902 bytes | SHA-256 27b254e8f5ea2fabe393725bbf7c25845d942605e23868bee2a6cf6a9cb72a44
+outputs/tubb5_test/Tubb5_design.json | 54235 bytes | SHA-256 bf0e5ac044fbee0bb889cfdda776c9e6de0bc240e87a6a0b620648997541930b
+outputs/tubb5_test/Tubb5_C_terminal_mNeonGreen_assembled_plasmid.gb | 9531 bytes | SHA-256 c4decf1c7f421fb065df726bb5c0d0369d6869876d7710b4ed638d2b7a99a692
 
 KNOWN LIMITATIONS
 -------------------------------------------------------
@@ -73,4 +85,5 @@ Reference sequence only; no strain/cell-line variants are considered.
 Live Ensembl mouse and human smoke tests passed on 2026-07-21; deterministic stand-ins retain offline coverage for both species.
 Only coding changes with an identical reconstructed CDS translation are automated. Noncoding changes, splice-edge changes, and cases without a safe synonymous solution are flagged for manual review.
 Codon-usage optimization and comprehensive cryptic-splice/regulatory-motif prediction are not yet implemented.
+Custom uploads currently accept SnapGene `.dna` only, require the exact supported SapI/linker architecture, and require cassette coordinates not to cross the file origin. Payload-only FASTA and arbitrary adapter/linker definitions are not yet implemented.
 The result is a computational design and requires independent sequence, transcript, plasmid, and biological validation before experimental use.

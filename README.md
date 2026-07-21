@@ -2,17 +2,16 @@
 
 A local Streamlit prototype for Bollen-style **in-trans paired nicking (ITPN)** gene tagging with **SpCas9 D10A**. The first input is species: mouse **GRCm39** or human **GRCh38**.
 
-Version 0.4.0 deliberately supports one finalized donor architecture:
+Version 0.5.0 supports both finalized Bollen donor architectures:
 
-- C-terminal `GGGGSAS-mNeonGreen-stop`
-- Bollen TVBB C-term-mNeongreen
-- Addgene plasmid **#169227**
-- the supplied Addgene `.dna` sequence as the fixed backbone reference
+- N-terminal `mNeonGreen-GGGGSAS` using Addgene **#169226**
+- C-terminal `GGGGSAS-mNeonGreen-stop` using Addgene **#169227**
+- uploaded custom SnapGene backbones that retain one of those two four-SapI/linker architectures
 - 600-bp arms by default
 - no off-target analysis
 - reference sequence only
 
-Custom donor backbones and custom tags remain deferred while the sequence-critical mutation workflow is validated.
+Custom files are accepted only after exact structural checks; arbitrary adapters, linkers, enzymes, and payload-only FASTA uploads remain deferred.
 
 ## What it does
 
@@ -22,11 +21,12 @@ Custom donor backbones and custom tags remain deferred while the sequence-critic
 4. Ranks guides by the Bollen priorities available locally: distance first, target disruption second, then basic GC/poly-T properties. A nearer guide is not demoted merely because it needs a synonymous blocking mutation.
 5. Generates gene-oriented homology arms, detects every internal SapI site, and automatically removes coding sites when a verified synonymous codon replacement is available.
 6. Re-evaluates the selected target after all donor edits. If needed, it searches synonymous changes that destroy the PAM first, then PAM-proximal seed changes that satisfy the 14-nt retained-segment cutoff. Every released change must preserve the complete CDS translation and avoid new SapI sites.
-7. Generates the exact Bollen S1/S3 C-terminal UHA and DHA synthesis fragments and PCR-primer tail templates.
-8. Parses the uploaded Addgene #169227 SnapGene file, verifies its four SapI sites and `TAC -> GGC -> TGA -> AAT` overhang order, and checks that its 729-bp payload matches Bollen supplementary S2.
+7. Generates the exact Bollen supplementary N- or C-terminal UHA/DHA synthesis fragments and PCR-primer tail templates.
+8. Parses Addgene #169226 or #169227, verifies all four SapI sites, and reconstructs the payload between the inner cuts. N-terminal order is `TAC -> GTG -> AGC -> AAT`; C-terminal order is `TAC -> GGC -> TGA -> AAT`.
 9. Reconstructs the full circular Golden Gate product and verifies all four ligation junctions and the absence of residual SapI sites.
 10. Exports TXT, CSV, FASTA, JSON, and an annotated GenBank file that can be opened in SnapGene and similar sequence editors.
 11. Presents a SapI quality-control panel with total and per-arm counts plus a site-by-site record of coordinates, resolution status, nucleotide/codon changes, protein consequence, and selection reason.
+12. Optionally classifies an uploaded circular SnapGene backbone as N- or C-terminal from its SapI overhang order, validates its GGGGSAS linker and reading frame, then runs the same complete assembly and export path.
 
 The prototype does **not** calculate a validated on-target activity score, perform off-target searches, inspect sample-specific variants, or design locus-specific PCR annealing regions. Noncoding guide-blocking and SapI changes are deliberately withheld for manual review, as are coding cases for which no verified synonymous solution is found.
 
@@ -78,6 +78,16 @@ The bundled `data/addgene_169227.dna` file is parsed directly. The expected inpu
 
 The assembled GenBank file includes the retained backbone annotations, the two donor target sites, both homology arms, linker, mNeonGreen CDS and stop, the four SapI junctions, and the single synonymous Tubb5 SapI-domestication change.
 
+The bundled `data/addgene-169226.dna` N-terminal backbone is also verified directly:
+
+- length/topology: 2,765 bp / circular
+- SHA-256: `75d9d25b4dac8083c401ee5ac76b080a5f62e42d23357a81b4ac33e84a434177`
+- SapI overhang order: `TAC`, `GTG`, `AGC`, `AAT`
+- extracted payload: 726 bp (235-aa mNeonGreen followed by GGGGSAS; no stop codon)
+- 600-bp-arm donor insert/final plasmid: 1,972 bp / 3,947 bp
+
+For a custom `.dna` upload, the app requires a circular record, exactly four SapI sites in one supported order, a frame-compatible payload, the expected GGGGSAS junction linker, and no internal in-frame stop. A cassette crossing the file's sequence origin must first be rotated so the `TAC` cut precedes the payload.
+
 ## Important limitations
 
 This is a computational design aid, not an experimentally validated clinical or diagnostic tool. Independently verify transcript choice, all junctions, the current plasmid sequence, sample genotype, guide activity, and biological suitability before ordering or experimentation. C-terminal tagging of Tubb5 may perturb its functionally important tubulin tail; the bundled result is computational only.
@@ -85,6 +95,7 @@ This is a computational design aid, not an experimentally validated clinical or 
 ## Method and sequence sources
 
 - Bollen et al. (2022), paper and supplementary S1-S3: guide priorities, 14-nt retargeting cutoff, 600-bp arms, SapI adapters, and mNeonGreen payload.
-- Uploaded Addgene plasmid #169227 SnapGene file: fixed circular backbone sequence and annotation.
+- Uploaded Addgene plasmids #169226 and #169227: fixed circular backbone sequences and annotations.
+- `data/bollen_supplementary_s1.docx`: N- and C-terminal fragment/primer architecture supplied from the original paper.
 - Ensembl REST: live human/mouse transcript and reference-sequence retrieval.
 - UCSC/GENCODE mm39: bundled Tubb5 reference fixture.

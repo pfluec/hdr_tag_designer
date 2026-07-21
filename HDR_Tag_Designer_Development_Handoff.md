@@ -1,6 +1,6 @@
 # HDR Tag Designer — Development Handoff
 
-**Project version reviewed:** `0.4.0`
+**Project version reviewed:** `0.5.0` (working tree; not yet committed)
 **Handoff date:** 2026-07-21
 **Purpose:** Continue development, debugging, and validation of the local HDR-tagging design tool in a new session or local coding environment.
 
@@ -8,18 +8,20 @@
 
 ## 0. Continuation status — read this first
 
-Development continued on the Git branch:
+Development is continuing on the Git branch:
 
 ```text
-feat/handoff-next-features
+feat/n-terminal-backbone-support
 ```
 
-Version `0.4.0` completes the two sequence-critical priorities that were open in the original handoff:
+Version `0.5.0` retains the automatic-mutation work from `0.4.0` and adds the first backbone-extensibility chunk:
 
-1. automatic synonymous guide-blocking mutations for live coding designs;
-2. generic synonymous SapI domestication for coding homology-arm sites.
+1. complete N-terminal tagging with the uploaded Addgene #169226 backbone;
+2. reusable frozen `BackboneDefinition` configurations for #169226 and #169227;
+3. shared N/C fragment, primer, payload, circular-assembly, annotation, and validation code;
+4. guarded custom SnapGene `.dna` upload classified from its SapI overhang order.
 
-It also adds:
+The previous release's behavior remains intact:
 
 - bounded Ensembl retries for HTTP 429, HTTP 5xx, and connection failures;
 - clean user-facing Ensembl errors without returned HTML bodies;
@@ -32,12 +34,12 @@ It also adds:
 Current validation state:
 
 ```text
-28/28 unittest tests pass
-Python compilation passes
-git diff --check passes
+32/32 unittest tests pass
 Bundled Tubb5 fixture remains sequence-complete
-Live mouse Tubb5: ENSMUST00000001566.11, sequence-complete
-Live human TUBB5: ENST00000327892.13, sequence-complete
+Exact #169227 Tubb5 sequence/coordinate/plasmid regressions pass unchanged
+Synthetic N-terminal designs pass on plus and minus gene strands
+Addgene #169226 yields a 3947-bp SapI-free assembled plasmid with 600-bp arms
+Custom-upload classification and complete assembly path pass using #169226 as a fixture
 ```
 
 The bundled offline Tubb5 fixture remains `ENSMUST00000001566.10` for reproducibility. Ensembl resolved the same stable mouse transcript as version `.11` during the 2026-07-21 live check.
@@ -57,24 +59,61 @@ For the selected nearest guide, the live design path:
 
 Generic SapI domestication examines every `GCTCTTC` and `GAAGAGC` motif in both homology arms. It applies the smallest verified synonymous coding change available, rechecks the complete CDS and all arm sites, and leaves noncoding/unsafe sites unresolved. The fixed Tubb5 fixture retains its exact locked `GAG -> GAA` regression correction.
 
-### 0.2 Important implementation locations
+### 0.2 N-terminal and custom-backbone behavior now implemented
 
-- `hdr_designer/design.py`: transcript/genome mapping, arm generation, generic synonymous mutation search, guide blocking, SapI domestication, and final validation gates.
+The newly supplied `data/bollen_supplementary_s1.docx` and `data/addgene-169226.dna` establish the N-terminal architecture:
+
+- insert immediately after the endogenous `ATG`;
+- UHA adapters produce `TAC -> GTG`;
+- DHA adapters produce `AGC -> AAT`;
+- #169226 is 2,765 bp, circular, SHA-256 `75d9d25b4dac8083c401ee5ac76b080a5f62e42d23357a81b4ac33e84a434177`;
+- the supplied protocol file SHA-256 is `5270e6028876d74daf551e4607d274ce0411fc07e1caaead3071bdb9378f44e0`;
+- inner cuts reconstruct a 726-nt payload: 705-nt mNeonGreen followed by the 21-nt GGGGSAS linker, with no stop codon;
+- a standard 600/600-bp design produces a 1,972-bp donor insert and 3,947-bp final plasmid;
+- predicted edited protein order is native initiator methionine, payload, then native residue 2 onward.
+
+Custom `.dna` uploads currently require all of the following before release:
+
+- circular SnapGene input;
+- exactly four SapI sites;
+- exact supported order `TAC/GGC/TGA/AAT` (C) or `TAC/GTG/AGC/AAT` (N);
+- cassette coordinates in increasing file order (a cassette crossing the sequence origin must be rotated first);
+- an in-frame extracted payload;
+- the GGGGSAS linker in the architecture-specific position;
+- no internal in-frame stop;
+- selected UI terminus matching the inferred backbone terminus.
+
+Passing uploads use the same full donor/plasmid assembly, junction checks, residual-SapI check, fusion translation, exports, and QC gates as the built-ins.
+
+### 0.3 Important implementation locations
+
+- `hdr_designer/backbones.py`: built-in definitions, SapI classification, payload extraction, custom `.dna` inference, shared synthesis fragments, and shared plasmid assembly.
+- `hdr_designer/design.py`: transcript/genome mapping, arm generation, generic synonymous mutation search, guide blocking, SapI domestication, N/C fusion placement, and final validation gates.
 - `hdr_designer/ensembl.py`: bounded retry behavior and transcript-parent/biotype validation.
 - `hdr_designer/exports.py`: mutation-aware exports and `sapi_qc_rows()`.
-- `app.py`: the SapI quality-control panel and mutation display.
+- `app.py`: dynamic N/C built-in selection, custom `.dna` upload, SapI QC, and mutation display.
 - `tests/test_online_design.py`: PAM blocking, seed blocking, unsafe refusal, one/multiple SapI sites, and reverse-strand coverage.
 - `tests/test_guides.py`: nearest-guide precedence regression.
 - `tests/test_ensembl.py`: retry and transcript-validation coverage.
 - `tests/test_tubb5.py`: fixed sequence/coordinate, assembly, export, and SapI-QC regression.
 
-### 0.3 Next development objective
+### 0.4 Next development objective
 
 The next chunk of work is now:
 
-> Refactor the fixed Addgene #169227 architecture into serializable backbone and payload definitions, then add validated custom backbone upload and custom DNA payload configuration without regressing the exact fixed Tubb5 result.
+> Separate payload metadata from backbone configuration, then add payload-only DNA/FASTA input and stronger negative fixtures without regressing either built-in architecture.
 
-The recommended implementation sequence is specified in sections 15, 16, and 22 below.
+Recommended sequence:
+
+1. introduce a dedicated serializable `PayloadDefinition` rather than storing tag/linker offsets directly on `BackboneDefinition`;
+2. support payload-only DNA/FASTA input for either N- or C-terminal architecture;
+3. allow GenBank input in addition to SnapGene `.dna`;
+4. add negative fixtures for malformed files, wrong site count/order, residual SapI, frame error, internal stop, missing linker, terminus mismatch, and origin-crossing cassettes;
+5. decide whether origin-crossing circular cassettes should be normalized automatically;
+6. add user-provided payload/tag names and export annotations;
+7. keep the exact #169227 Tubb5 and #169226 N-terminal regression outputs locked.
+
+Sections later in this document describe the original `0.4.0` roadmap and should be read as historical design context where they conflict with this continuation-status section.
 
 ---
 
@@ -90,7 +129,7 @@ The initial implementation follows the workflow described by **Bollen et al. (20
 - SapI-compatible Golden Gate assembly,
 - sequence validation of the donor and edited locus.
 
-The current prototype is intentionally narrow and uses one fixed, validated donor architecture before adding user-defined backbones and tags.
+The current prototype has two validated built-in donor architectures and a deliberately narrow custom-backbone path before broader user-defined payload support.
 
 ---
 
@@ -107,11 +146,12 @@ The following choices were explicitly agreed upon:
 - **Sequence source:** public Ensembl reference sequence
 - **Sample-specific variants:** not included
 - **Interface:** local Streamlit application
-- **Initial fixed donor:** Addgene plasmid **#169227**
-- **Initial tag:** C-terminal mNeonGreen
+- **Built-in donors:** Addgene plasmids **#169226** (N-terminal) and **#169227** (C-terminal)
+- **Built-in tag:** mNeonGreen with architecture-specific GGGGSAS linker placement
 - **Validation gene:** mouse **Tubb5**
 - **Validation transcript:** `ENSMUST00000001566`
-- **Custom backbones and tags:** add after the fixed-backbone workflow is stable
+- **Custom backbones:** supported for structurally matching circular SnapGene `.dna` files
+- **Custom payload-only input:** next development chunk
 - **Blocking mutations:** automatically design verified synonymous coding changes when possible; otherwise block for manual review
 
 ---
@@ -121,7 +161,7 @@ The following choices were explicitly agreed upon:
 The current repository version is:
 
 ```text
-0.4.0 on feat/handoff-next-features
+0.5.0 working tree on feat/n-terminal-backbone-support
 ```
 
 Main project structure:
@@ -1085,6 +1125,8 @@ A sequence-valid design is not automatically biologically valid. Terminal taggin
 
 - Bollen et al. (2022), main paper and supplementary materials describing ITPN guide selection, homology-arm design, SapI adapters, and donor architecture.
 - Uploaded Addgene plasmid #169227 SnapGene `.dna` file.
+- Uploaded Addgene plasmid #169226 SnapGene `.dna` file.
+- Uploaded `bollen_supplementary_s1.docx`, used to verify the exact N-terminal arm adapters and primer tails.
 - Ensembl REST for live mouse and human transcript/genomic sequence retrieval.
 - Bundled mouse Tubb5 reference fixture for regression testing.
 
@@ -1094,13 +1136,13 @@ A sequence-valid design is not automatically biologically valid. Terminal taggin
 
 The current version should be considered:
 
-> A sequence-complete fixed-backbone prototype for reference-based C-terminal mNeonGreen tagging of mouse or human protein-coding transcripts using Bollen/Addgene #169227. It automatically applies verified synonymous guide-blocking and coding SapI-domestication mutations, exposes those decisions for quality control, and blocks noncoding or unresolved mutation cases for manual review.
+> A sequence-complete N- and C-terminal prototype for reference-based tagging of mouse or human protein-coding transcripts using Bollen/Addgene #169226 or #169227, with a guarded custom SnapGene-backbone path for the same SapI/linker architectures. It automatically applies verified synonymous guide-blocking and coding SapI-domestication mutations, exposes those decisions for quality control, and blocks unresolved sequence cases for manual review.
 
 The next major extensibility objective is:
 
-1. **refactor Addgene #169227 into generic `BackboneDefinition` and `PayloadDefinition` configurations;**
-2. **add validated user-supplied SnapGene/GenBank/FASTA backbones;**
-3. **add custom DNA/FASTA tags and payloads with frame, translation, junction, and restriction-site checks.**
+1. **split the current generic `BackboneDefinition` into clean serializable backbone and payload definitions;**
+2. **add custom DNA/FASTA payload-only input and user tag metadata;**
+3. **add GenBank backbone input, comprehensive negative fixtures, and optional circular-origin normalization.**
 
 Preserve these invariants throughout that work:
 

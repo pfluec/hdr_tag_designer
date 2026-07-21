@@ -4,20 +4,11 @@ from dataclasses import dataclass, replace
 from itertools import combinations
 
 from .backbones import (
-    BACKBONE_ADDGENE_ID,
-    BACKBONE_NAME,
-    CTERM_DHA_FORWARD_PRIMER_TAIL,
-    CTERM_DHA_REVERSE_PRIMER_TAIL_PREFIX,
-    CTERM_UHA_FORWARD_PRIMER_TAIL_PREFIX,
-    CTERM_UHA_REVERSE_PRIMER_TAIL,
-    NTERM_DHA_PREFIX,
-    NTERM_DHA_SUFFIX,
-    NTERM_UHA_PREFIX,
-    NTERM_UHA_SUFFIX,
-    SAPI_OVERHANGS,
+    BackboneDefinition,
     SAPI_RECOGNITION_MOTIFS,
-    c_terminal_synthesis_fragments,
-    payload_metadata,
+    backbone_for_terminus,
+    payload_metadata_for,
+    synthesis_fragments_for_backbone,
 )
 from .ensembl import EnsemblClient, SPECIES
 from .fixtures import (
@@ -864,18 +855,6 @@ def _apply_cdna_changes_to_cds(
     return "".join(edited)
 
 
-def _preview_n_terminal_fragments(target: str, uha: str, dha: str) -> dict[str, str | int]:
-    uha_fragment = NTERM_UHA_PREFIX + target + uha + NTERM_UHA_SUFFIX
-    dha_fragment = NTERM_DHA_PREFIX + dha + target + NTERM_DHA_SUFFIX
-    return {
-        "uha_synthesis_fragment_preview_5to3": uha_fragment,
-        "uha_synthesis_fragment_length_nt": len(uha_fragment),
-        "dha_synthesis_fragment_preview_5to3": dha_fragment,
-        "dha_synthesis_fragment_length_nt": len(dha_fragment),
-        "note": "Locus-only preview; Addgene #169227 is a C-terminal backbone.",
-    }
-
-
 def _finalize_result(
     *,
     record: TranscriptRecord,
@@ -892,13 +871,19 @@ def _finalize_result(
     three_prime_arm: HomologyArm,
     guides: list[GuideCandidate],
     provenance: list[str],
+    backbone_definition: BackboneDefinition | None = None,
     extra_warnings: list[str] | None = None,
 ) -> DesignResult:
     is_c_terminal = terminus.upper().startswith("C")
+    definition = backbone_definition or backbone_for_terminus(terminus)
+    if definition.terminus != ("C-terminal" if is_c_terminal else "N-terminal"):
+        raise DesignError(
+            f"The selected {definition.terminus} backbone cannot be used for {terminus} tagging"
+        )
     top = guides[0] if guides else None
     final_sapi_count = len(five_prime_arm.final_sapi_sites) + len(three_prime_arm.final_sapi_sites)
 
-    donor_payload: dict[str, object] = payload_metadata() if is_c_terminal else {}
+    donor_payload: dict[str, object] = payload_metadata_for(definition)
     cloning_fragments: dict[str, object] = {}
     primer_tails: dict[str, str] = {}
     edited_cds = ""
@@ -906,23 +891,22 @@ def _finalize_result(
     junctions: dict[str, str] = {}
 
     guide_safe = bool(top and not top.blocking_mutation_required)
-    can_release_cterm = bool(
-        is_c_terminal and top and guide_safe and final_sapi_count == 0
-    )
-    if can_release_cterm and top:
-        cloning_fragments = c_terminal_synthesis_fragments(
+    can_release = bool(top and guide_safe and final_sapi_count == 0)
+    if can_release and top:
+        cloning_fragments = synthesis_fragments_for_backbone(
+            definition,
             target_with_pam=top.target_with_pam,
             uha=five_prime_arm.final_gene_oriented_sequence,
             dha=three_prime_arm.final_gene_oriented_sequence,
         )
         primer_tails = {
             "UHA_forward_5prime_tail": (
-                CTERM_UHA_FORWARD_PRIMER_TAIL_PREFIX + top.target_with_pam
+                definition.uha_forward_primer_tail_prefix + top.target_with_pam
             ),
-            "UHA_reverse_5prime_tail": CTERM_UHA_REVERSE_PRIMER_TAIL,
-            "DHA_forward_5prime_tail": CTERM_DHA_FORWARD_PRIMER_TAIL,
+            "UHA_reverse_5prime_tail": definition.uha_reverse_primer_tail,
+            "DHA_forward_5prime_tail": definition.dha_forward_primer_tail,
             "DHA_reverse_5prime_tail": (
-                CTERM_DHA_REVERSE_PRIMER_TAIL_PREFIX
+                definition.dha_reverse_primer_tail_prefix
                 + reverse_complement(top.target_with_pam)
             ),
             "note": (
@@ -931,7 +915,11 @@ def _finalize_result(
             ),
         }
         payload_coding = str(donor_payload["payload_coding_sequence"])
-        edited_cds = edited_cds_without_stop + payload_coding
+        edited_cds = (
+            edited_cds_without_stop + payload_coding
+            if is_c_terminal
+            else edited_cds_without_stop[:3] + payload_coding + edited_cds_without_stop[3:]
+        )
         fusion_protein = translate(edited_cds)
         payload_sequence = str(donor_payload["payload_sequence_5to3"])
         junctions = {
@@ -947,22 +935,14 @@ def _finalize_result(
                 + three_prime_arm.final_gene_oriented_sequence[:100]
             ),
         }
-    elif not is_c_terminal and top:
-        cloning_fragments = _preview_n_terminal_fragments(
-            top.target_with_pam,
-            five_prime_arm.final_gene_oriented_sequence,
-            three_prime_arm.final_gene_oriented_sequence,
-        )
-
     backbone_info = cloning_fragments.get("uploaded_backbone", {})
     backbone_verified = bool(
-        is_c_terminal
-        and backbone_info
-        and backbone_info.get("addgene_id") == BACKBONE_ADDGENE_ID
-        and backbone_info.get("length_nt") == 2768
+        backbone_info
+        and backbone_info.get("addgene_id") == definition.addgene_id
+        and backbone_info.get("length_nt") == definition.expected_length_nt
         and backbone_info.get("topology") == "circular"
         and backbone_info.get("sapi_site_count") == 4
-        and backbone_info.get("payload_matches_bollen_s2") is True
+        and backbone_info.get("payload_sequence_verified") is True
     )
     golden_gate_junctions = cloning_fragments.get("golden_gate_junctions", {})
     junctions_verified = bool(
@@ -973,8 +953,7 @@ def _finalize_result(
         )
     )
     plasmid_assembly_verified = bool(
-        is_c_terminal
-        and cloning_fragments.get("assembled_plasmid_length_nt")
+        cloning_fragments.get("assembled_plasmid_length_nt")
         and cloning_fragments.get("assembled_plasmid_topology") == "circular"
         and cloning_fragments.get("assembled_plasmid_sapi_site_count") == 0
         and junctions_verified
@@ -984,7 +963,7 @@ def _finalize_result(
         {
             "check": "Reference coding frame",
             "status": "PASS" if len(cds_without_stop) % 3 == 0 else "FAIL",
-            "detail": f"Coding sequence before the tag is {len(cds_without_stop)} nt ({len(cds_without_stop) // 3} aa).",
+            "detail": f"Native coding sequence without the terminal stop is {len(cds_without_stop)} nt ({len(cds_without_stop) // 3} aa).",
         },
         {
             "check": "SpCas9-NGG candidates",
@@ -1053,52 +1032,42 @@ def _finalize_result(
             },
             {
                 "check": "Bollen SapI fragment architecture",
-                "status": "PASS" if can_release_cterm else ("N/A" if not is_c_terminal else "BLOCKED"),
+                "status": "PASS" if can_release else "BLOCKED",
                 "detail": (
-                    "Exact S1/S3 C-terminal adapters and TAC/GGC/TGA/AAT overhangs were applied."
-                    if can_release_cterm
-                    else (
-                        "N-terminal preview only; the selected fixed backbone is C-terminal."
-                        if not is_c_terminal
-                        else "Fragments are withheld until guide-retargeting and internal-SapI gates pass."
-                    )
+                    f"Exact supplementary S1 {definition.terminus} adapters and "
+                    f"{'/'.join(definition.overhangs.values())} overhangs were applied."
+                    if can_release
+                    else "Fragments are withheld until guide-retargeting and internal-SapI gates pass."
                 ),
             },
             {
-                "check": "Uploaded Addgene #169227 backbone",
-                "status": "PASS" if backbone_verified else ("N/A" if not is_c_terminal else "BLOCKED"),
+                "check": f"Uploaded Addgene #{definition.addgene_id} backbone",
+                "status": "PASS" if backbone_verified else "BLOCKED",
                 "detail": (
                     f"Parsed {backbone_info.get('snapgene_file')} ({backbone_info.get('length_nt')} bp, "
-                    f"{backbone_info.get('topology')}); four SapI sites yield TAC/GGC/TGA/AAT, "
-                    "and the extracted 729-bp payload matches Bollen supplementary S2."
+                    f"{backbone_info.get('topology')}); four SapI sites yield "
+                    f"{'/'.join(definition.overhangs.values())}, and the extracted "
+                    f"{definition.payload_length_nt}-bp payload matches the verified sequence."
                     if backbone_verified
-                    else (
-                        "Not applicable to an N-terminal preview."
-                        if not is_c_terminal
-                        else "The uploaded fixed-backbone sequence did not pass structural verification."
-                    )
+                    else "The uploaded fixed-backbone sequence did not pass structural verification."
                 ),
             },
             {
                 "check": "Full circular plasmid assembly",
-                "status": "PASS" if plasmid_assembly_verified else ("N/A" if not is_c_terminal else "BLOCKED"),
+                "status": "PASS" if plasmid_assembly_verified else "BLOCKED",
                 "detail": (
                     f"Reconstructed a {cloning_fragments.get('assembled_plasmid_length_nt')}-bp circular plasmid; "
                     "all four ligation junctions match and no SapI recognition site remains."
                     if plasmid_assembly_verified
-                    else (
-                        "Not applicable to an N-terminal preview."
-                        if not is_c_terminal
-                        else "No fully verified circular Golden Gate product was released."
-                    )
+                    else "No fully verified circular Golden Gate product was released."
                 ),
             },
             {
                 "check": "Fusion translation",
-                "status": "PASS" if fusion_protein else ("N/A" if not is_c_terminal else "BLOCKED"),
+                "status": "PASS" if fusion_protein else "BLOCKED",
                 "detail": (
                     f"Predicted fusion is {len(fusion_protein)} aa; linker {donor_payload.get('linker_peptide', '')}; "
-                    f"mNeonGreen {donor_payload.get('tag_length_aa', '')} aa; linker-plus-tag payload "
+                    f"{donor_payload.get('tag_name', 'tag')} {donor_payload.get('tag_length_aa', '')} aa; linker-plus-tag payload "
                     f"{donor_payload.get('payload_peptide_length_aa', '')} aa."
                     if fusion_protein
                     else "No final fusion translation released."
@@ -1108,7 +1077,7 @@ def _finalize_result(
     )
 
     sequence_complete = bool(
-        can_release_cterm and fusion_protein and backbone_verified and plasmid_assembly_verified
+        can_release and fusion_protein and backbone_verified and plasmid_assembly_verified
     )
     status = "SEQUENCE-COMPLETE COMPUTATIONAL DESIGN" if sequence_complete else "REVIEW REQUIRED"
     warnings = list(extra_warnings or [])
@@ -1118,14 +1087,9 @@ def _finalize_result(
             "Reference-genome sequence only; strain, cell-line, and clone-specific variants are not assessed.",
             "No experimental activity score is calculated. After the two primary Bollen priorities, ranking uses only GC/poly-T heuristics.",
             "Sequence-complete means the internal computational gates and uploaded-backbone assembly simulation passed; independently verify every sequence and plasmid junction before experimental use.",
-            "Custom donor backbones and tags are deliberately not implemented in this version.",
+            "Custom backbone uploads are accepted only when all four SapI sites, the supported overhang order, the GGGGSAS linker, and the payload reading frame validate.",
         ]
     )
-    if not is_c_terminal:
-        warnings.append(
-            "Addgene #169227 is C-terminal; N-terminal output is a locus-design preview, not a complete donor design."
-        )
-
     return DesignResult(
         status=status,
         sequence_complete=sequence_complete,
@@ -1138,8 +1102,8 @@ def _finalize_result(
         gene_strand="+" if record.strand == 1 else "-",
         terminus=terminus,
         nuclease_mode="ITPN with SpCas9 D10A nickase",
-        backbone_name=BACKBONE_NAME,
-        backbone_addgene_id=BACKBONE_ADDGENE_ID,
+        backbone_name=definition.name,
+        backbone_addgene_id=definition.addgene_id,
         insertion_boundary0=insertion_boundary0,
         removed_genomic_interval_start0=removed_start0,
         removed_genomic_interval_end0=removed_end0,
@@ -1167,7 +1131,7 @@ def _finalize_result(
         validations=validations,
         warnings=warnings,
         provenance=provenance,
-        custom_backbones_supported=False,
+        custom_backbones_supported=True,
     )
 
 
@@ -1180,17 +1144,35 @@ def design_online(
     arm_length: int = 600,
     guide_window: int = 50,
     client: EnsemblClient | None = None,
+    backbone_definition: BackboneDefinition | None = None,
 ) -> DesignResult:
     if species_key not in SPECIES:
         raise DesignError(f"Unsupported species: {species_key}")
     if arm_length < 100:
         raise DesignError("Homology arms shorter than 100 bp are not supported")
+    terminus_upper = terminus.upper()
+    if not (terminus_upper.startswith("C") or terminus_upper.startswith("N")):
+        raise DesignError("Terminus must be N-terminal or C-terminal")
+    selected_backbone = backbone_definition or backbone_for_terminus(terminus)
+    expected_terminus = "C-terminal" if terminus_upper.startswith("C") else "N-terminal"
+    if selected_backbone.terminus != expected_terminus:
+        raise DesignError(
+            f"The selected {selected_backbone.terminus} backbone cannot be used for {terminus} tagging"
+        )
     client = client or EnsemblClient()
     record = client.transcript_record(SPECIES[species_key], gene, transcript_id)
+    backbone_source = (
+        f"Custom SnapGene backbone {selected_backbone.dna_path.name}"
+        if selected_backbone.is_custom
+        else f"Uploaded Addgene #{selected_backbone.addgene_id} SnapGene sequence"
+    )
+    payload_source = (
+        "Custom payload extracted between the verified inner SapI cuts"
+        if selected_backbone.is_custom
+        else f"Fixed {selected_backbone.terminus} mNeonGreen payload extracted from the uploaded backbone"
+    )
     mapping = build_transcript_genome_map(record)
     cds_start = _find_unique_cds(record.cdna, record.cds)
-    terminus_upper = terminus.upper()
-
     if terminus_upper.startswith("C"):
         stop = record.cds[-3:]
         if stop not in {"TAA", "TAG", "TGA"}:
@@ -1321,10 +1303,11 @@ def design_online(
             f"Gene, transcript, and genomic sequence retrieved live from Ensembl REST ({record.species.assembly}).",
             f"Transcript selected: {record.display_transcript_id}.",
             "Guide/arm rules and SapI adapters follow Bollen et al. 2022 supplementary S1/S3.",
-            "Uploaded Addgene #169227 SnapGene sequence parsed and checked against the Bollen supplementary SapI overhang architecture.",
-            "Fixed linker-mNeonGreen-stop payload extracted from the uploaded backbone and verified against Bollen supplementary S2.",
+            f"{backbone_source} parsed and checked against the Bollen supplementary {selected_backbone.terminus} SapI overhang architecture.",
+            f"{payload_source} and verified by length, reading frame, and SHA-256 digest.",
             "Coding SapI sites and selected-guide retargeting are evaluated with generic synonymous-codon search and full-CDS translation checks.",
         ],
+        backbone_definition=selected_backbone,
         extra_warnings=mutation_warnings,
     )
 
