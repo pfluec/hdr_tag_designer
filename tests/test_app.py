@@ -31,7 +31,12 @@ class StreamlitAppTest(unittest.TestCase):
         self.assertEqual(metrics["Arm SapI sites found"], "1")
         self.assertEqual(metrics["Arm SapI sites resolved"], "1")
         self.assertEqual(metrics["Arm SapI sites remaining"], "0")
-        self.assertEqual(len(app.get("download_button")), 8)
+        self.assertEqual(len(app.get("download_button")), 1)
+        self.assertEqual(app.get("download_button")[0].label, "Ordering package (.zip)")
+        self.assertTrue(app.get("download_button")[0].disabled)
+        self.assertTrue(
+            any("3-prime homology arm, bases 256-281: T x 26" in item.value for item in app.error)
+        )
 
         # A normal Streamlit rerun (including older download behavior) must
         # restore the completed result from session state instead of resetting.
@@ -41,7 +46,8 @@ class StreamlitAppTest(unittest.TestCase):
             "SEQUENCE-COMPLETE COMPUTATIONAL DESIGN",
             [message.value for message in app.success],
         )
-        self.assertEqual(len(app.get("download_button")), 8)
+        self.assertEqual(len(app.get("download_button")), 1)
+        self.assertTrue(app.get("download_button")[0].disabled)
 
     def test_n_terminal_selection_uses_169226_and_disables_fixture(self) -> None:
         app_path = Path(__file__).resolve().parents[1] / "app.py"

@@ -2,7 +2,7 @@
 
 A local Streamlit prototype for Bollen-style **in-trans paired nicking (ITPN)** gene tagging with **SpCas9 D10A**. The first input is species: mouse **GRCm39** or human **GRCh38**.
 
-Version 0.6.0 supports both finalized Bollen donor architectures:
+Version 0.7.0 supports both finalized Bollen donor architectures:
 
 - N-terminal `mNeonGreen-GGGGSAS` using Addgene **#169226**
 - C-terminal `GGGGSAS-mNeonGreen-stop` using Addgene **#169227**
@@ -26,10 +26,11 @@ Custom files are accepted only after exact SapI structural checks. Complex casse
 9. Reconstructs the full circular Golden Gate product and verifies all four ligation junctions and the absence of residual SapI sites.
 10. Shows the reference guide target/PAM, the target after automatic point mutations, and the actual donor-allele sequence across the edited region, including an insertion marker and the full inserted context.
 11. Designs WT-locus, 5-prime junction, and 3-prime junction genotyping PCR assays with Primer3 thermodynamics. Junction genomic primers bind outside the homology arms, payload primers bind at least 150 bp from the tested junction, and external primers are checked against the assembled donor plasmid.
-12. Exports TXT, guide CSV, genotyping-primer CSV, FASTA, JSON, and an annotated GenBank file that can be opened in SnapGene and similar sequence editors.
+12. Exports one deterministic ordering ZIP containing a Twist sequence CSV, the two selected-guide cloning oligos as CSV, four unique genotyping primers with full assay metadata as CSV, and annotated GenBank records for the assembled plasmid, WT locus, and edited locus. The older report/FASTA/JSON generators remain available internally but are no longer separate UI downloads.
 13. Presents a SapI quality-control panel with total and per-arm counts plus a site-by-site record of coordinates, resolution status, nucleotide/codon changes, protein consequence, and selection reason.
 14. Optionally classifies an uploaded circular SnapGene backbone as N- or C-terminal from its SapI overhang order, then runs the same complete assembly and export path. A conventional GGGGSAS single-ORF payload receives a fusion prediction; other payload organizations are retained as complex cassettes with a warning.
-15. Builds separate annotated linear WT and edited locus records, each extending 300 bp beyond both homology arms. The records annotate reference/final arms, payload or native junction sequence, and applicable genotyping-primer binding sites and are downloadable as GenBank.
+15. Builds separate annotated linear WT and edited locus records, each extending 300 bp beyond both homology arms. The records annotate reference/final arms, payload or native junction sequence, and applicable genotyping-primer binding sites and are included in the ordering ZIP as GenBank.
+16. Applies an ordering preflight to the final, mutation-containing homology arms. Any homopolymer longer than 14 nt is reported with its arm, base interval, base, and run length and blocks the ZIP; a run of exactly 14 nt is allowed. Twist portal screening is still required for all submitted sequences.
 
 The prototype does **not** calculate a validated on-target activity score, perform off-target searches, inspect sample-specific variants, or perform a genome-wide primer-uniqueness search. Genotyping primers are checked against the donor plasmid, but must still be confirmed with Primer-BLAST before ordering. Non-coding guide-blocking changes remain withheld, while non-coding SapI sites are now domesticated automatically when an eligible one-base solution passes the sequence gates. Sites confined to coding bases without a synonymous solution, protected splice-edge bases, or otherwise unsafe candidates remain blocked.
 
@@ -72,6 +73,10 @@ The fixed payload is 729 bp (`GGGGSAS` linker + 235-aa mNeonGreen + `TGA`). The 
 
 The bundled result also locks three genotyping assays: a 1,290-bp WT-locus product (2,016 bp from the edited allele), an 845-bp 5-prime junction product, and an 804-bp 3-prime junction product. Both external locus primers are outside the homology arms and absent from the assembled donor plasmid; both payload primers are more than 150 bp from their tested junction.
 
+The natural final Tubb5 3-prime homology arm contains a 26-nt poly-T run at arm bases 256-281. The computational donor design therefore remains available for inspection, but version 0.7.0 deliberately blocks its order-ready ZIP under the configured Twist homopolymer rule. This is a locked error-path regression, not a software failure.
+
+The four exported genotyping oligos are named `Tubb5_wt_5_fwd`, `Tubb5_wt_3_rev`, `Tubb5_mut_5_rev`, and `Tubb5_mut_3_fwd`. The external WT primers are reused exactly in their corresponding 5-prime and 3-prime junction assays instead of being emitted twice.
+
 ## Uploaded-backbone verification
 
 The bundled `data/addgene_169227.dna` file is parsed directly. The expected input properties are:
@@ -107,3 +112,4 @@ This is a computational design aid, not an experimentally validated clinical or 
 - Ensembl REST: live human/mouse transcript and reference-sequence retrieval.
 - UCSC/GENCODE mm39: bundled Tubb5 reference fixture.
 - Primer3/primer3-py: PCR-primer melting temperatures and secondary-structure calculations; default 18-27-nt, 57-63 C, 35-65% GC rule set.
+- Twist ordering platform: current CSV uploads use flexible name/sequence column mapping; the export therefore places `Name` and `Sequence` first and retains project QC metadata in additional columns. The local 14-nt homopolymer maximum is the project rule supplied by the user, while the Twist portal remains authoritative for complete synthesis screening.

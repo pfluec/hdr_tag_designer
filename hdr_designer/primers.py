@@ -418,6 +418,7 @@ def _primer_dict(
 
 def design_genotyping_primers(
     *,
+    gene_name: str,
     assembly: str,
     chromosome: str,
     gene_strand: int,
@@ -569,12 +570,52 @@ def design_genotyping_primers(
         }
     )
 
+    selected_assay_candidates: dict[
+        str, tuple[_PrimerCandidate, _PrimerCandidate]
+    ] = {}
+    primer_names = {
+        "five_prime_junction": (
+            f"{gene_name}_wt_5_fwd",
+            f"{gene_name}_mut_5_rev",
+        ),
+        "three_prime_junction": (
+            f"{gene_name}_mut_3_fwd",
+            f"{gene_name}_wt_3_rev",
+        ),
+        "wild_type_locus": (
+            f"{gene_name}_wt_5_fwd",
+            f"{gene_name}_wt_3_rev",
+        ),
+    }
     for spec in assay_specs:
+        left_candidates = spec["left"]
+        right_candidates = spec["right"]
+        if (
+            spec["key"] == "wild_type_locus"
+            and "five_prime_junction" in selected_assay_candidates
+            and "three_prime_junction" in selected_assay_candidates
+        ):
+            shared_left = selected_assay_candidates["five_prime_junction"][0]
+            shared_three_right = selected_assay_candidates["three_prime_junction"][1]
+            three_to_wt_offset = wt_external_start0 - three_external_start0
+            shared_right = _PrimerCandidate(
+                sequence=shared_three_right.sequence,
+                bind_start0=shared_three_right.bind_start0 + three_to_wt_offset,
+                bind_end0=shared_three_right.bind_end0 + three_to_wt_offset,
+                orientation=shared_three_right.orientation,
+                tm_c=shared_three_right.tm_c,
+                gc_percent=shared_three_right.gc_percent,
+                hairpin_tm_c=shared_three_right.hairpin_tm_c,
+                homodimer_tm_c=shared_three_right.homodimer_tm_c,
+                score=shared_three_right.score,
+            )
+            left_candidates = [shared_left]
+            right_candidates = [shared_right]
         selected = _select_pair(
             assay=spec["key"],
             template=spec["template"],
-            left_candidates=spec["left"],
-            right_candidates=spec["right"],
+            left_candidates=left_candidates,
+            right_candidates=right_candidates,
             assembled_plasmid=assembled_plasmid,
             genomic_sides=spec["genomic_sides"],
             target_product_size=spec["target"],
@@ -589,11 +630,12 @@ def design_genotyping_primers(
             }
             continue
         left, right, assay = selected
+        selected_assay_candidates[spec["key"]] = (left, right)
         left_source, left_offset, left_interval = spec["left_source"]
         right_source, right_offset, right_interval = spec["right_source"]
         assay["forward_primer"] = _primer_dict(
             left,
-            name=f"{spec['key']}_forward",
+            name=primer_names[spec["key"]][0],
             source=left_source,
             source_offset0=left_offset,
             region_interval0=left_interval,
@@ -602,7 +644,7 @@ def design_genotyping_primers(
         )
         assay["reverse_primer"] = _primer_dict(
             right,
-            name=f"{spec['key']}_reverse",
+            name=primer_names[spec["key"]][1],
             source=right_source,
             source_offset0=right_offset,
             region_interval0=right_interval,

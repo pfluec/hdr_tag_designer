@@ -1317,6 +1317,7 @@ def _finalize_result(
             and external_three_interval0 is not None
         ):
             genotyping_primers = design_genotyping_primers(
+                gene_name=record.gene_symbol,
                 assembly=record.species.assembly,
                 chromosome=record.chromosome,
                 gene_strand=record.strand,

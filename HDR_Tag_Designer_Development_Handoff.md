@@ -1,18 +1,21 @@
 # HDR Tag Designer — Development Handoff
 
-**Project version reviewed:** `0.6.0` on `main` at merge commit `9398337`
+**Project version reviewed:** `0.7.0` on feature branch `feat/ordering-export-bundle`, based on `main` documentation commit `3eb6776` (following merge `9398337`)
 **Handoff date:** 2026-07-21
 **Purpose:** Continue development, debugging, and validation of the local HDR-tagging design tool in a new session or local coding environment.
 
 ---
 
-## Next features — prioritized ordering and export roadmap
+## Ordering and export roadmap — implemented in 0.7.0
 
-The core design workflow is feature-complete for the current scope. The next development chunk should focus on producing the small set of files that are actually sent for ordering or retained as final annotated records.
+The core design workflow and the ordering/export chunk are complete for the current scope. The Streamlit interface now exposes one order-package ZIP and hides non-selected guide candidates. The older export generators remain available internally for diagnostics and regression tests.
 
-### P1. Twist Bioscience sequence-ordering CSV — required
+### P1. Twist Bioscience sequence-ordering CSV — implemented
 
-Add a CSV download containing every sequence intended for synthesis through Twist Bioscience.
+The ZIP contains `<gene>_<terminus>_twist_sequences.csv` with the final post-mutation, SapI-flanked UHA and DHA synthesis fragments. `Name` and `Sequence` are the first two fields because the current Twist uploader detects and maps those columns; length, role, gene, terminus, SHA-256, local QC status/ruleset, and the required Twist-portal screening reminder follow as metadata. Official format references checked during implementation:
+
+- https://www.twistbioscience.com/twist-ordering-platform
+- https://www.twistbioscience.com/products/genes/complex-genes-early-access
 
 Requirements:
 
@@ -22,39 +25,45 @@ Requirements:
 - include sequence, length, checksum, and relevant design/QC status columns in addition to the vendor-required fields;
 - verify the current Twist upload schema from an official template or documentation before fixing column names;
 - keep vendor-specific column mapping isolated in the export layer and add a deterministic CSV regression fixture;
-- retain or implement synthesis-complexity checks against the final orderable sequence, with exact warning intervals and a recorded rule-set version; do not invent Twist thresholds from memory.
+- synthesis preflight is recorded as `HDR Tag Designer Twist preflight v1 (2026-07-21)`;
+- per the user-supplied ordering requirement, each **final homology arm** may contain at most 14 identical consecutive nucleotides;
+- runs of 15 or more produce an error with arm name, 1-based arm interval, base, and run length and prevent ZIP release;
+- exactly 14 is accepted;
+- the CSV still says `Twist Portal Screening = REQUIRED`, because this one local rule does not replace the vendor's full proprietary sequence-complexity screen.
 
-### P2. Primer-generation guide/function and primer-ordering CSV — required, awaiting user-supplied guide
+### P2. Selected-guide oligo function and ordering CSV — implemented
 
-The user will add a small primer-generation guide/tool to the repository. Once present:
+The user-supplied `generate_oligos_from_guides.py` was reduced to the requested single-guide library behavior. It is intentionally used **only** for the selected CRISPR guide, not for homology-arm cloning or genotyping-primer design:
 
-1. read it completely and treat its rules as the authoritative primer-generation function for this project;
-2. integrate it with the existing homology-arm cloning primers and genotyping-primer data structures rather than maintaining two unrelated implementations;
-3. produce a vendor-ready primer-ordering CSV with stable primer names and complete `5' -> 3'` sequences;
-4. retain tail and annealing portions separately in internal data even when the ordering CSV uses the complete oligo;
-5. include primer purpose, length, annealing temperature, GC percentage, purification/modification fields required by the ordering schema, and validation warnings where useful;
-6. add locked Tubb5 C-terminal and Actb N-terminal CSV regressions.
+1. forward oligo: `CACCG` + selected 20-nt spacer;
+2. reverse oligo: `AAAC` + reverse complement of the spacer + `C`;
+3. CSV columns: `Guide Name`, `Sequence Type`, `Sequence`;
+4. CLI and batch behavior were removed;
+5. the ZIP contains exactly these two guide-derived oligos in `<gene>_<terminus>_guide_oligos.csv`.
 
-Do not guess the new guide's required inputs or output schema before the file is supplied. The current Primer3 implementation remains the fallback/reference behavior until that integration is completed.
+The Primer3-based genotyping and homology-arm cloning primer systems remain separate by design.
 
-### P3. Genotyping-primer CSV — implemented baseline; retain and refine
+### P3. Genotyping-primer CSV — refined and implemented
 
 `genotyping_primers_csv()` already downloads one row per primer with assay, sequence, orientation, source coordinates, length, Tm, GC, structure metrics, expected product sizes, and amplicon sequences.
 
-Remaining work:
+The detailed CSV now emits four unique oligos, with no duplicate row for the shared external primers:
 
-- align names and ordering columns with the user-supplied primer-generation/order guide;
-- decide whether the detailed genotyping CSV remains a separate file in the ZIP or is accompanied by a smaller vendor-ordering primer CSV;
+- `<gene>_wt_5_fwd`, shared by WT-locus and 5-prime junction assays;
+- `<gene>_wt_3_rev`, shared by WT-locus and 3-prime junction assays;
+- `<gene>_mut_5_rev`, the 5-prime junction payload primer;
+- `<gene>_mut_3_fwd`, the 3-prime junction payload primer;
+- the detailed CSV remains a separate ZIP member and records its assay reuse explicitly in `used_in_assays`;
 - retain the current donor-plasmid absence check and explicit warning that genome-wide uniqueness still requires Primer-BLAST;
 - keep both external genomic primers outside the homology arms and payload primers at least 150 bp from their tested junctions.
 
-### P4. Single ZIP delivery and simplified download interface — required
+### P4. Single ZIP delivery and simplified download interface — implemented
 
-Replace the current collection of individual user-facing downloads with one ZIP archive containing only:
+The current user-facing ZIP contains exactly:
 
 1. Twist sequence-ordering CSV;
-2. primer-ordering CSV produced through the user-supplied guide/function;
-3. detailed genotyping-primer CSV, unless its relevant metadata is deliberately folded into the primer-ordering CSV;
+2. selected-guide oligo ordering CSV produced through the user-supplied function;
+3. detailed four-oligo genotyping-primer CSV;
 4. annotated assembled donor plasmid GenBank;
 5. annotated WT locus GenBank;
 6. annotated edited-locus GenBank.
@@ -63,16 +72,16 @@ The three GenBank generators already exist. The WT and edited records must conti
 
 The other current downloads—TXT report, guide CSV, general FASTA, and full JSON—should be removed from the normal Streamlit download interface. Their generator functions may remain internally if useful for regression testing, diagnostics, or reproducibility, but they are no longer required as user-facing outputs.
 
-Use an in-memory ZIP, deterministic filenames, and tests that open the archive and validate the complete expected member list and all CSV/GenBank contents. Preserve the existing no-rerun download behavior and session-state restoration.
+The archive is generated in memory with fixed member timestamps, permissions, order, and filenames. Tests compare complete ZIP bytes across repeated builds, inspect the exact member list, parse all CSVs, and round-trip all three GenBank records. The single Streamlit download retains `on_click="ignore"` and the existing session-state restoration behavior.
 
-### P5. Alternative-guide handling — optional, low priority
+### P5. Alternative-guide handling — safe minimal option implemented
 
 The current UI shows multiple ranked candidates but downstream design uses only the top selected guide. Resolve this ambiguity in one of two ways:
 
 - simplest: display/export only the chosen guide; or
 - advanced: allow the user to select another eligible guide and then rerun **all** dependent guide-blocking, arm, payload, plasmid, primer, locus-context, validation, and export calculations.
 
-Do not allow a visual guide choice that leaves outputs generated from a different guide. Until full recalculation is implemented, hiding non-selected guides is safer than presenting them as actionable choices.
+The ranked non-selected guide table is hidden. Only the selected guide is displayed and exported, so the UI cannot imply that another guide can be selected without recomputing dependent outputs. Interactive alternative-guide selection remains a possible later feature.
 
 ---
 
@@ -81,21 +90,21 @@ Do not allow a visual guide choice that leaves outputs generated from a differen
 Development is continuing on the Git branch:
 
 ```text
-main
+feat/ordering-export-bundle
 ```
 
-The completed feature branches were merged and pushed to `origin/main` in merge commit `9398337` (`merge: HDR designer feature and QC improvements`). Start new work from the current remote `main`; do not continue from the old feature-branch pointers.
+This branch was created from `main` at documentation commit `3eb6776` (immediately after feature merge `9398337`) before the ordering/export implementation. At the time of this handoff update, the 0.7.0 changes are implemented and tested locally but have not been committed or merged.
 
-Version `0.6.0` retains the automatic-mutation and N/C backbone work from `0.5.1` and adds:
+Version `0.7.0` retains the automatic-mutation, custom-backbone, complex-payload, guide-context, and genotyping work from `0.6.0` and adds:
 
-1. complex custom payload cassettes without a forced single-ORF interpretation;
-2. explicit warnings for non-frame, multi-ORF, missing-linker, or internal-stop payloads;
-3. reference, post-point-mutation, compact actual-edited, and full actual-edited guide-target sequences;
-4. WT-locus, 5-prime junction, and 3-prime junction primer design with Primer3 thermodynamics;
-5. junction genomic primers outside the homology arms and payload primers at least 150 bp from the tested junction;
-6. genotyping display plus TXT, CSV, FASTA amplicon, and JSON exports.
-7. annotated WT and edited linear locus contexts extending 300 bp beyond both homology arms, with arm, payload/native-junction, and genotyping-primer features.
-8. download buttons use Streamlit's no-rerun mode, and the latest completed `DesignResult` is restored from session state after any incidental rerun instead of resetting the page.
+1. final UHA/DHA Twist sequence CSV with stable names, checksums, and QC metadata;
+2. selected-guide forward/reverse oligo CSV using the supplied function;
+3. exact reuse of both external genomic primers across WT and junction assays;
+4. the four requested gene-specific genotyping-primer names and four-row detailed CSV;
+5. deterministic six-member ordering ZIP with all three CSVs and all three GenBank records;
+6. one no-rerun ZIP download in place of the eight old user-facing downloads;
+7. hidden non-selected guides until full dependent recalculation is implemented;
+8. a hard ordering error for homopolymer runs of 15 or more in either final homology arm.
 
 The previous release's behavior remains intact:
 
@@ -110,15 +119,16 @@ The previous release's behavior remains intact:
 Current validation state:
 
 ```text
-37/37 unittest tests pass
+43/43 unittest tests pass
 Bundled Tubb5 fixture remains sequence-complete
+Tubb5 ordering ZIP is correctly blocked by a natural T x 26 run in final DHA bases 256-281
 Exact #169227 Tubb5 sequence/coordinate/plasmid regressions pass unchanged
 Synthetic N-terminal designs pass on plus and minus gene strands
 Addgene #169226 yields a 3947-bp SapI-free assembled plasmid with 600-bp arms
 Custom-upload classification and complete assembly path pass using #169226 as a fixture
 Complex multi-ORF/non-frame payload classification and non-blocking assembly are covered
 Tubb5 produces all three constrained genotyping primer pairs
-Live Actb N-terminal validation remains sequence-complete and produces all three primer pairs
+Live Actb N-terminal validation is sequence-complete, produces all three primer pairs with exact external-primer reuse, passes the <=14-nt homopolymer check, and builds the six-member ZIP
 ```
 
 The bundled offline Tubb5 fixture remains `ENSMUST00000001566.10` for reproducibility. Ensembl resolved the same stable mouse transcript as version `.11` during the 2026-07-21 live check.
@@ -257,10 +267,10 @@ The following choices were explicitly agreed upon:
 
 ## 3. Current package
 
-The current repository version is:
+The current working version is:
 
 ```text
-0.6.0 on main at merge commit 9398337 (pushed to origin/main)
+0.7.0 on feat/ordering-export-bundle, based on main documentation commit 3eb6776
 ```
 
 Main project structure:
@@ -285,6 +295,8 @@ hdr_tag_designer/
 │   ├── backbones.py
 │   ├── snapgene.py
 │   ├── exports.py
+│   ├── ordering.py
+│   ├── generate_oligos_from_guides.py
 │   └── fixtures.py
 ├── data/
 │   ├── addgene_169227.dna
@@ -553,23 +565,20 @@ This result is a computational test only. C-terminal tagging may interfere with 
 
 ## 10. Current exports
 
-The program currently exports combinations of:
+The normal Streamlit interface now exposes one ZIP containing exactly:
 
-- plain-text design report,
-- guide table as CSV,
-- homology arms and cloning fragments as FASTA,
-- JSON design data,
-- annotated GenBank assembled plasmid,
-- annotated WT and edited-locus GenBank records with 300-bp external flanks,
-- detailed genotyping-primer CSV with Tm, GC, structure, coordinate, and amplicon metadata,
-- junction sequences,
-- complete homology-arm cloning primers with separately reported SapI/Golden Gate tails and genomic annealing regions.
+- final UHA/DHA Twist sequence-ordering CSV;
+- selected-guide forward/reverse oligo CSV;
+- four-row detailed genotyping-primer CSV with Tm, GC, structure, coordinate, reuse, and amplicon metadata;
+- annotated assembled-plasmid GenBank;
+- annotated WT-locus GenBank with 300-bp external flanks;
+- annotated edited-locus GenBank with 300-bp external flanks.
+
+The plain-text report, ranked-guide CSV, general FASTA, JSON, and individual GenBank generator functions remain internal for tests and diagnostics but are no longer separate user-facing downloads.
 
 The Streamlit interface and TXT report also include SapI quality control: total/per-arm counts, every original motif and coordinate, resolution status, exact nucleotide/codon change, protein consequence, and selection reason.
 
-Version 0.6.0 appends Primer3-evaluated, arm-end genomic annealing regions to all four fixed Bollen cloning tails. The UI colors tails and annealing regions separately and provides a copyable complete sequence. If a required donor mutation lies internally, outside both endpoint-primer footprints, the app warns that endpoint PCR alone cannot create the final arm and that synthesis or an additional mutagenesis strategy is required.
-
-The next export revision intentionally replaces these many user-facing downloads with the single ZIP described in P4. Do not remove the underlying generators until the ZIP tests cover the information that must be retained.
+Version 0.6.0 appended Primer3-evaluated, arm-end genomic annealing regions to all four fixed Bollen cloning tails. The UI continues to color tails and annealing regions separately and provides a copyable complete sequence. If a required donor mutation lies internally, outside both endpoint-primer footprints, the app warns that endpoint PCR alone cannot create the final arm and that synthesis or an additional mutagenesis strategy is required.
 
 ---
 
@@ -1151,9 +1160,9 @@ Additional tests still useful after the ordering/export chunk:
 8. custom payload containing SapI;
 9. deliberately residual SapI site in a generalized final plasmid;
 10. deliberate final fusion translation mismatch;
-11. Twist CSV schema and sequence/checksum fixtures;
-12. primer-ordering CSV fixtures after the user guide is supplied;
-13. deterministic ZIP member-list and content validation.
+11. a cached real Actb record for an offline exact CSV/ZIP regression;
+12. custom-backbone ordering packages for both architecture classes;
+13. designs with multiple homopolymer failures distributed across both arms.
 
 For sequence-critical code, tests should assert exact sequences and coordinates, not only that a result object was returned.
 
@@ -1175,17 +1184,19 @@ Completed in the current repository:
 - [x] add homology-arm cloning primers and three genotyping assays;
 - [x] add detailed genotyping-primer CSV and three GenBank generators;
 - [x] preserve completed results across downloads/reruns.
+- [x] integrate the selected-guide oligo function and its two-row CSV;
+- [x] give the four unique genotyping primers stable gene-specific names and enforce external-primer reuse;
+- [x] add final UHA/DHA Twist CSV with checksum and preflight metadata;
+- [x] enforce the final-arm homopolymer maximum and block ZIP release for 15+ nt;
+- [x] build and test the deterministic six-member ordering ZIP;
+- [x] replace the old download buttons with the single ZIP and hide non-selected guides.
 
-Recommended next order:
+Recommended next work:
 
-1. wait for and read the user-supplied primer-generation guide/function;
-2. verify the official Twist ordering CSV schema;
-3. implement the Twist sequence-ordering CSV;
-4. implement the primer-ordering CSV and align the detailed genotyping CSV;
-5. build the deterministic final ZIP with ordering CSVs plus the three GenBank records;
-6. replace the current user-facing downloads with the ZIP;
-7. add Tubb5 and Actb archive-content regressions;
-8. later hide non-selected guides or implement safe full guide selection/recalculation.
+1. obtain an official fixed-column Twist template only if the laboratory's account workflow requires one; the current uploader supports flexible name/sequence mapping;
+2. consider a user-assisted redesign path for homopolymer-blocked arms such as Tubb5, without silently changing genomic sequence;
+3. cache a license-compatible Actb reference fixture if a fully offline exact archive regression is desired;
+4. later implement safe alternative-guide selection only together with full downstream recalculation.
 
 Commands:
 
@@ -1240,15 +1251,16 @@ A sequence-valid design is not automatically biologically valid. Terminal taggin
 
 The current version should be considered:
 
-> A sequence-complete N- and C-terminal prototype for reference-based tagging of mouse or human protein-coding transcripts using Bollen/Addgene #169226 or #169227, with a guarded custom SnapGene-backbone path for the same SapI/linker architectures. It automatically applies verified synonymous guide-blocking plus synonymous-coding or guarded non-coding SapI-domestication mutations, exposes those decisions for quality control, and withholds sequence-complete output when no safe automatic solution exists.
+> A sequence-complete N- and C-terminal prototype for reference-based tagging of mouse or human protein-coding transcripts using Bollen/Addgene #169226 or #169227, with a guarded custom SnapGene-backbone path for the same SapI/linker architectures. It automatically applies verified synonymous guide-blocking plus synonymous-coding or guarded non-coding SapI-domestication mutations, exposes those decisions for quality control, and packages the final order-facing CSV/GenBank artifacts only after the dedicated synthesis preflight passes.
 
-The next delivery objective is:
+The 0.7.0 delivery objective is complete:
 
-1. **export final synthesis sequences in the verified Twist CSV schema;**
-2. **integrate the forthcoming user-supplied primer-generation guide and emit a primer-ordering CSV;**
+1. **export final synthesis sequences in the current flexible Twist CSV format;**
+2. **integrate the user-supplied selected-guide oligo function and emit its ordering CSV;**
 3. **retain the detailed genotyping-primer CSV;**
 4. **deliver those ordering CSVs and the assembled-plasmid, WT-locus, and edited-locus GenBank records in one ZIP;**
-5. **remove the other download buttons from the normal interface.**
+5. **remove the other download buttons from the normal interface;**
+6. **block order-ready export when either final arm contains a homopolymer longer than 14 nt.**
 
 Payload-only FASTA input, GenBank backbone input, origin normalization, and richer payload metadata remain possible later extensions but are no longer the immediate next chunk.
 
@@ -1256,4 +1268,4 @@ Preserve these invariants throughout that work:
 
 - the fixed Tubb5 sequence and coordinate regression must remain exact;
 - the nearer-guide/silent-mutation preference must not change;
-- no order-ready output may be released while any backbone, payload, mutation, junction, frame, topology, or residual-site validation is unresolved.
+- no order-ready output may be released while any backbone, payload, mutation, junction, topology, residual-site, or configured homopolymer validation is unresolved. Complex/non-frame payloads remain intentionally non-blocking with an explicit interpretation warning.

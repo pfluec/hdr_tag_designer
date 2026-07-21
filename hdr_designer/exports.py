@@ -81,6 +81,7 @@ def genotyping_primers_csv(result: DesignResult) -> str:
     fields = [
         "assay",
         "assay_status",
+        "used_in_assays",
         "primer_role",
         "primer_name",
         "sequence_5to3",
@@ -110,53 +111,51 @@ def genotyping_primers_csv(result: DesignResult) -> str:
     ]
     writer = csv.DictWriter(output, fieldnames=fields, lineterminator="\n")
     writer.writeheader()
-    for assay_name, assay in result.genotyping_primers.get("assays", {}).items():
-        primer_written = False
-        for role in ("forward_primer", "reverse_primer"):
-            primer = assay.get(role)
-            if not primer:
-                continue
-            primer_written = True
-            writer.writerow(
-                {
-                    "assay": assay_name,
-                    "assay_status": assay.get("status", ""),
-                    "primer_role": role.replace("_primer", ""),
-                    "primer_name": primer.get("name", ""),
-                    "sequence_5to3": primer.get("sequence_5to3", ""),
-                    "orientation": primer.get("orientation", ""),
-                    "reference_sequence_strand": primer.get("reference_sequence_strand", ""),
-                    "source": primer.get("source", ""),
-                    "reusable_payload_primer": primer.get("source") == "payload",
-                    "outside_homology_arm": primer.get("outside_homology_arm", False),
-                    "genomic_interval_1based": primer.get("genomic_interval_1based", ""),
-                    "payload_interval_1based": primer.get("payload_interval_1based", ""),
-                    "distance_from_5prime_junction_nt": primer.get("distance_from_5prime_junction_nt", ""),
-                    "distance_from_3prime_junction_nt": primer.get("distance_from_3prime_junction_nt", ""),
-                    "length_nt": primer.get("length_nt", ""),
-                    "tm_c": primer.get("tm_c", ""),
-                    "gc_percent": primer.get("gc_percent", ""),
-                    "hairpin_tm_c": primer.get("hairpin_tm_c", ""),
-                    "homodimer_tm_c": primer.get("homodimer_tm_c", ""),
-                    "pair_heterodimer_tm_c": assay.get("heterodimer_tm_c", ""),
-                    "pair_tm_difference_c": assay.get("tm_difference_c", ""),
-                    "expected_product_size_bp": assay.get("product_size_bp", ""),
-                    "expected_wild_type_product_size_bp": assay.get("expected_wild_type_product_size_bp", ""),
-                    "expected_edited_product_size_bp": assay.get("expected_edited_product_size_bp", ""),
-                    "expected_amplicon_sequence_5to3": assay.get("amplicon_sequence_5to3", ""),
-                    "expected_wild_type_amplicon_sequence_5to3": assay.get("expected_wild_type_amplicon_sequence_5to3", ""),
-                    "expected_edited_amplicon_sequence_5to3": assay.get("expected_edited_amplicon_sequence_5to3", ""),
-                    "reason": assay.get("reason", ""),
-                }
-            )
-        if not primer_written:
-            writer.writerow(
-                {
-                    "assay": assay_name,
-                    "assay_status": assay.get("status", ""),
-                    "reason": assay.get("reason", ""),
-                }
-            )
+    assays = result.genotyping_primers.get("assays", {})
+    unique_primers = (
+        ("wild_type_locus", "forward_primer", "wild_type_locus;five_prime_junction"),
+        ("wild_type_locus", "reverse_primer", "wild_type_locus;three_prime_junction"),
+        ("five_prime_junction", "reverse_primer", "five_prime_junction"),
+        ("three_prime_junction", "forward_primer", "three_prime_junction"),
+    )
+    for assay_name, role, used_in_assays in unique_primers:
+        assay = assays.get(assay_name, {})
+        primer = assay.get(role)
+        if not primer:
+            continue
+        writer.writerow(
+            {
+                "assay": assay_name,
+                "assay_status": assay.get("status", ""),
+                "used_in_assays": used_in_assays,
+                "primer_role": role.replace("_primer", ""),
+                "primer_name": primer.get("name", ""),
+                "sequence_5to3": primer.get("sequence_5to3", ""),
+                "orientation": primer.get("orientation", ""),
+                "reference_sequence_strand": primer.get("reference_sequence_strand", ""),
+                "source": primer.get("source", ""),
+                "reusable_payload_primer": primer.get("source") == "payload",
+                "outside_homology_arm": primer.get("outside_homology_arm", False),
+                "genomic_interval_1based": primer.get("genomic_interval_1based", ""),
+                "payload_interval_1based": primer.get("payload_interval_1based", ""),
+                "distance_from_5prime_junction_nt": primer.get("distance_from_5prime_junction_nt", ""),
+                "distance_from_3prime_junction_nt": primer.get("distance_from_3prime_junction_nt", ""),
+                "length_nt": primer.get("length_nt", ""),
+                "tm_c": primer.get("tm_c", ""),
+                "gc_percent": primer.get("gc_percent", ""),
+                "hairpin_tm_c": primer.get("hairpin_tm_c", ""),
+                "homodimer_tm_c": primer.get("homodimer_tm_c", ""),
+                "pair_heterodimer_tm_c": assay.get("heterodimer_tm_c", ""),
+                "pair_tm_difference_c": assay.get("tm_difference_c", ""),
+                "expected_product_size_bp": assay.get("product_size_bp", ""),
+                "expected_wild_type_product_size_bp": assay.get("expected_wild_type_product_size_bp", ""),
+                "expected_edited_product_size_bp": assay.get("expected_edited_product_size_bp", ""),
+                "expected_amplicon_sequence_5to3": assay.get("amplicon_sequence_5to3", ""),
+                "expected_wild_type_amplicon_sequence_5to3": assay.get("expected_wild_type_amplicon_sequence_5to3", ""),
+                "expected_edited_amplicon_sequence_5to3": assay.get("expected_edited_amplicon_sequence_5to3", ""),
+                "reason": assay.get("reason", ""),
+            }
+        )
     return output.getvalue()
 
 
@@ -245,7 +244,12 @@ def arms_fasta(result: DesignResult) -> str:
     return "".join(records)
 
 
-def locus_context_genbank(result: DesignResult, context_name: str) -> str:
+def locus_context_genbank(
+    result: DesignResult,
+    context_name: str,
+    *,
+    record_date: str | None = None,
+) -> str:
     """Return one annotated linear WT or edited locus context as GenBank."""
     context = result.locus_contexts.get(context_name)
     if not isinstance(context, dict) or not context.get("sequence_5to3"):
@@ -266,7 +270,7 @@ def locus_context_genbank(result: DesignResult, context_name: str) -> str:
             "molecule_type": "DNA",
             "topology": "linear",
             "data_file_division": "SYN",
-            "date": datetime.now(timezone.utc).strftime("%d-%b-%Y").upper(),
+            "date": record_date or datetime.now(timezone.utc).strftime("%d-%b-%Y").upper(),
             "source": f"{result.species_label} reference and computational donor design",
             "organism": result.species_label,
             "comment": (
@@ -307,7 +311,11 @@ def locus_context_genbank(result: DesignResult, context_name: str) -> str:
     return handle.getvalue()
 
 
-def assembled_plasmid_genbank(result: DesignResult) -> str:
+def assembled_plasmid_genbank(
+    result: DesignResult,
+    *,
+    record_date: str | None = None,
+) -> str:
     """Return an annotated GenBank representation of the simulated circular plasmid."""
     sequence = result.cloning_fragments.get("assembled_plasmid_5to3")
     features = result.cloning_fragments.get("assembled_plasmid_features")
@@ -329,7 +337,7 @@ def assembled_plasmid_genbank(result: DesignResult) -> str:
             "molecule_type": "DNA",
             "topology": "circular",
             "data_file_division": "SYN",
-            "date": datetime.now(timezone.utc).strftime("%d-%b-%Y").upper(),
+            "date": record_date or datetime.now(timezone.utc).strftime("%d-%b-%Y").upper(),
             "source": "synthetic DNA construct",
             "organism": "synthetic DNA construct",
             "taxonomy": ["other sequences", "artificial sequences"],

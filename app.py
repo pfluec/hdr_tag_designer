@@ -12,80 +12,59 @@ from hdr_designer.design import DesignError, design_online, design_tubb5_fixture
 from hdr_designer.backbones import backbone_for_terminus, infer_custom_backbone_definition
 from hdr_designer.ensembl import EnsemblError, SPECIES
 from hdr_designer.exports import (
-    arms_fasta,
-    assembled_plasmid_genbank,
-    design_json,
-    design_report,
-    guide_rows,
-    guides_csv,
-    genotyping_primers_csv,
-    locus_context_genbank,
     sapi_qc_rows,
 )
 from hdr_designer.models import DesignResult, HomologyArm
+from hdr_designer.ordering import (
+    OrderingError,
+    ordering_package_filename,
+    ordering_package_zip,
+    twist_ordering_qc,
+)
 from hdr_designer.snapgene import SnapGeneError
 
-APP_VERSION = "0.6.0"
+APP_VERSION = "0.7.0"
 
 
 def _download_buttons(result: DesignResult) -> None:
-    stem = f"{result.gene_symbol}_{result.terminus.lower().replace('-', '_').replace(' ', '_')}"
-    cols = st.columns(6)
-    cols[0].download_button(
-        "Full report (.txt)", design_report(result), f"{stem}_design_report.txt", "text/plain",
+    qc = twist_ordering_qc(result)
+    package = b""
+    package_error = ""
+    if qc["status"] == "ERROR":
+        package_error = (
+            "Twist ordering blocked: homology arms may not contain a homopolymer longer "
+            "than 14 nt. "
+            + "; ".join(
+                f"{item['arm']}, bases {item['interval_1based']}: "
+                f"{item['base']} x {item['length_nt']}"
+                for item in qc["findings"]
+            )
+        )
+    else:
+        try:
+            package = ordering_package_zip(result)
+        except OrderingError as exc:
+            package_error = str(exc)
+
+    if package_error:
+        st.error(package_error)
+    else:
+        st.caption(
+            "Ordering QC passed: neither final homology arm contains a homopolymer "
+            "longer than 14 nt. Twist portal screening is still required."
+        )
+    st.download_button(
+        "Ordering package (.zip)",
+        package,
+        ordering_package_filename(result),
+        "application/zip",
         width="stretch",
+        disabled=bool(package_error),
         on_click="ignore",
-    )
-    cols[1].download_button(
-        "Guides (.csv)", guides_csv(result), f"{stem}_guides.csv", "text/csv",
-        width="stretch",
-        on_click="ignore",
-    )
-    cols[2].download_button(
-        "Sequences (.fasta)", arms_fasta(result), f"{stem}_sequences.fasta", "text/plain",
-        width="stretch",
-        on_click="ignore",
-    )
-    cols[3].download_button(
-        "Assembled plasmid (.gb)",
-        assembled_plasmid_genbank(result) if result.sequence_complete else "",
-        f"{stem}_assembled_plasmid.gb",
-        "text/plain",
-        width="stretch",
-        disabled=not result.sequence_complete,
-        on_click="ignore",
-    )
-    cols[4].download_button(
-        "Genotyping primers (.csv)",
-        genotyping_primers_csv(result),
-        f"{stem}_genotyping_primers.csv",
-        "text/csv",
-        width="stretch",
-        on_click="ignore",
-    )
-    cols[5].download_button(
-        "Full data (.json)", design_json(result), f"{stem}_design.json", "application/json",
-        width="stretch",
-        on_click="ignore",
-    )
-    context_cols = st.columns(2)
-    context_cols[0].download_button(
-        "Annotated WT locus (.gb)",
-        locus_context_genbank(result, "wild_type") if result.locus_contexts else "",
-        f"{stem}_wild_type_locus_context.gb",
-        "text/plain",
-        width="stretch",
-        disabled=not bool(result.locus_contexts),
-        on_click="ignore",
-    )
-    context_cols[1].download_button(
-        "Annotated edited locus (.gb)",
-        locus_context_genbank(result, "edited") if result.locus_contexts else "",
-        f"{stem}_edited_locus_context.gb",
-        "text/plain",
-        width="stretch",
-        disabled=not bool(result.locus_contexts),
-        on_click="ignore",
+        help=(
+            "Contains Twist homology-arm sequences, the selected-guide oligos, "
+            "genotyping primers, and assembled-plasmid, WT-locus, and edited-locus GenBank files."
+        ),
     )
 
 
@@ -176,7 +155,7 @@ def _show_result(result: DesignResult) -> None:
     cols = st.columns(6)
     cols[0].metric("Assembly", result.assembly)
     cols[1].metric("Transcript", result.transcript_id)
-    cols[2].metric("Guides", len(result.guides))
+    cols[2].metric("Guide", "selected" if result.guides else "none")
     cols[3].metric("Arms", f"{result.homology_arm_length} bp")
     cols[4].metric("Native protein", f"{result.protein_length_aa} aa")
     cols[5].metric(
@@ -252,8 +231,6 @@ def _show_result(result: DesignResult) -> None:
                 "edited region contains substitutions/deletions only."
             )
         st.caption(result.guide_scoring_note)
-        with st.expander("All ranked candidates"):
-            st.dataframe(pd.DataFrame(guide_rows(result)), hide_index=True, width="stretch")
 
     _show_sapi_quality_control(result)
 
@@ -497,7 +474,7 @@ def main() -> None:
     st.title("HDR Tag Designer")
     st.caption(
         f"Bollen-style ITPN gene-tagging prototype using SpCas9 D10A. Version {APP_VERSION} "
-        "adds complex custom payloads, edited guide context, genotyping primers, and annotated locus records."
+        "adds order-ready CSVs, a consolidated ZIP export, and homology-arm synthesis QC."
     )
     st.info(
         "Species is the first design choice. The bundled Tubb5 test is reproducible offline; "
