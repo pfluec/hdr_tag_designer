@@ -191,7 +191,9 @@ def _show_result(result: DesignResult) -> None:
             f"{guide.final_pam or guide.pam} "
             f"({'disrupted' if guide.final_pam_destroyed else 'retained'})",
         )
-        cols[5].metric("Retained segment", f"{guide.final_longest_retained_segment} nt")
+        cols[5].metric(
+            "Recuttable site", "present" if guide.recuttable_site_present else "absent"
+        )
         st.code(f"5'-{guide.spacer}-{guide.pam}-3'", language=None)
         st.write(guide.rationale)
         if guide.blocking_mutation_note:

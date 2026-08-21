@@ -6,6 +6,75 @@ from .sequence import gc_percent, reverse_complement
 GUIDE_SAFETY_CUTOFF_NT = 14
 
 
+def pam_proximal_matching_segment_length(reference: str, candidate: str) -> int:
+    """Return the contiguous PAM-proximal suffix matching the original spacer."""
+    retained = 0
+    for expected, observed in zip(reversed(reference.upper()), reversed(candidate.upper())):
+        if expected != observed:
+            break
+        retained += 1
+    return retained
+
+
+def recuttable_on_target_sites(
+    edited_locus_gene_oriented: str,
+    original_spacer: str,
+    *,
+    junctions0: tuple[int, ...] = (),
+    cutoff_nt: int = GUIDE_SAFETY_CUTOFF_NT,
+) -> list[dict[str, object]]:
+    """Find edited-locus NGG sites sufficiently resembling the intended target.
+
+    A candidate is a contiguous 20-nt protospacer immediately followed by an NGG
+    PAM on either strand of the complete edited locus. It is reported when its
+    contiguous PAM-proximal match to the original spacer exceeds ``cutoff_nt``.
+    Thus a genomic spacer fragment and its former PAM cannot be combined across an
+    insertion: only bases in one actual 23-nt PAM-adjacent window are evaluated.
+    """
+    sequence = edited_locus_gene_oriented.upper()
+    original = original_spacer.upper()
+    matches: list[dict[str, object]] = []
+    for strand, oriented in (("+", sequence), ("-", reverse_complement(sequence))):
+        for start0 in range(max(0, len(oriented) - 22)):
+            target = oriented[start0:start0 + 23]
+            if target[21:23] != "GG":
+                continue
+            spacer = target[:20]
+            retained = pam_proximal_matching_segment_length(original, spacer)
+            if retained <= cutoff_nt:
+                continue
+            if strand == "+":
+                locus_start0, locus_end0 = start0, start0 + 23
+            else:
+                locus_start0 = len(sequence) - (start0 + 23)
+                locus_end0 = len(sequence) - start0
+            matches.append(
+                {
+                    "strand": strand,
+                    "start0": locus_start0,
+                    "end0": locus_end0,
+                    "spacer": spacer,
+                    "pam": target[20:23],
+                    "target_with_pam": target,
+                    "longest_matching_segment_nt": retained,
+                    "pam_proximal_matching_segment_nt": retained,
+                    "exact_original_site": spacer == original,
+                    "crosses_insertion_junction": any(
+                        locus_start0 < junction0 < locus_end0 for junction0 in junctions0
+                    ),
+                }
+            )
+    return sorted(
+        matches,
+        key=lambda item: (
+            -int(item["longest_matching_segment_nt"]),
+            str(item["strand"]),
+            int(item["start0"]),
+            str(item["target_with_pam"]),
+        ),
+    )
+
+
 def _interval_overlap(start_a: int, end_a: int, start_b: int, end_b: int) -> bool:
     return start_a < end_b and start_b < end_a
 

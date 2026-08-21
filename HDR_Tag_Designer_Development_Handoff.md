@@ -1,7 +1,7 @@
 # HDR Tag Designer — Development Handoff
 
-**Project version reviewed:** `0.7.0` on feature branch `feat/ordering-export-bundle`, based on `main` documentation commit `3eb6776` (following merge `9398337`)
-**Handoff date:** 2026-07-21
+**Project version reviewed:** `0.7.0` on `main` at commit `ee1e83e` (`feat: adjust arm boundaries for homopolymers`), synchronized with `origin/main`
+**Handoff last updated:** 2026-08-21
 **Purpose:** Continue development, debugging, and validation of the local HDR-tagging design tool in a new session or local coding environment.
 
 ---
@@ -90,13 +90,13 @@ The ranked non-selected guide table is hidden. Only the selected guide is displa
 
 ## 0. Continuation status — read this first
 
-Development is continuing on the Git branch:
+The completed `0.7.0` work is on the Git branch:
 
 ```text
-feat/ordering-export-bundle
+main
 ```
 
-This branch was created from `main` at documentation commit `3eb6776` (immediately after feature merge `9398337`). The initial ordering/export implementation was committed on this branch as `2a364c2`; the subsequent homopolymer-aware arm-boundary refinement is included in the current feature-branch work. The branch has not been merged or pushed.
+The ordering/export implementation landed as `2a364c2`, followed by the homopolymer-aware arm-boundary refinement in `ee1e83e`. Commit `ee1e83e` is now the tip of `main`, `origin/main`, and the retained `feat/ordering-export-bundle` branch. The feature is therefore merged and pushed; new work should start from `main`.
 
 Version `0.7.0` retains the automatic-mutation, custom-backbone, complex-payload, guide-context, and genotyping work from `0.6.0` and adds:
 
@@ -273,7 +273,7 @@ The following choices were explicitly agreed upon:
 The current working version is:
 
 ```text
-0.7.0 on feat/ordering-export-bundle, based on main documentation commit 3eb6776
+0.7.0 on main at ee1e83e, synchronized with origin/main
 ```
 
 Main project structure:
@@ -392,15 +392,17 @@ The code uses a guide safety cutoff of:
 14 nt
 ```
 
-The intended logic is:
+The current logic reconstructs the complete edited allele as final UHA, payload, and final DHA, then scans both strands. A candidate site is one actual contiguous 23-nt window containing a 20-nt protospacer immediately followed by NGG in the PAM-containing orientation. The original genomic PAM and a protospacer fragment separated from it by an insertion are never combined into a synthetic risk call.
 
-- if the intended edit destroys the PAM, no additional blocking mutation is required;
-- if the PAM remains intact, calculate the longest uninterrupted retained segment of the original target;
-- if more than 14 nt remain contiguous with an intact PAM, the donor must contain an additional guide-blocking change;
-- if the design requires a blocking mutation, attempt a verified synonymous PAM or seed change;
-- if no safe synonymous coding change is available, withhold final order-ready cloning fragments.
+- unchanged sites retained entirely on either side of the insertion are detected;
+- sites recreated across either payload junction, including reverse-complement cases, are detected;
+- the 14-nt heuristic applies only to the contiguous PAM-proximal portion of a real candidate spacer that matches the original spacer;
+- a candidate with more than 14 such bases requires a verified synonymous PAM or seed change;
+- the final edited locus is rescanned after each proposed change, alongside complete-CDS translation, SapI, and homopolymer checks;
+- if no safe synonymous coding change is available, that guide remains blocked;
+- guides retain nick-distance-first ranking, but the engine now falls back deterministically to the highest-ranked candidate that passes the release gate.
 
-Version `0.4.0` implements this for coding portions of live mouse and human designs. Noncoding changes remain manual-review cases. The selected nearest guide is retained while a silent blocking solution is sought; a farther guide is not silently substituted.
+The change fixes the mouse Hck C-terminal case (`ENSMUST00000109799.9`): `TCATGTCCTTACTGCTG[INSERT 729 nt]AGG` does not contain a contiguous original target, and the complete edited-locus scan finds no recreated recuttable site.
 
 ---
 
@@ -628,7 +630,7 @@ pytest
 streamlit run app.py
 ```
 
-The already-created local environment did not contain pytest during this continuation, so the authoritative suite was run through the repository's `unittest` runner. `./run_tests.zsh` passes all 28 tests and regenerates the Tubb5 outputs.
+The current named Conda environment contains the required runtime dependencies. On 2026-08-21, `conda run -n hdr-tag-designer python -m unittest discover -s tests -q` passed all 47 tests. `./run_tests.zsh` uses the same `unittest` suite and additionally regenerates the bundled Tubb5 outputs.
 
 ---
 

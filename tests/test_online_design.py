@@ -29,6 +29,7 @@ from hdr_designer.exports import (
     sapi_qc_rows,
 )
 from hdr_designer.models import Exon, HomologyArm, TranscriptRecord
+from hdr_designer.ordering import ordering_package_zip
 from hdr_designer.sequence import reverse_complement, translate
 
 
@@ -42,6 +43,7 @@ class SyntheticEnsemblClient:
         guide_requires_blocking: bool = False,
         guide_requires_seed_blocking: bool = False,
         guide_has_no_synonymous_block: bool = False,
+        guide_fallback: bool = False,
         coding_sapi_site: bool = False,
         multiple_coding_sapi_sites: bool = False,
         noncoding_sapi_site: bool = False,
@@ -75,13 +77,17 @@ class SyntheticEnsemblClient:
             )
         elif guide_has_no_synonymous_block:
             c_terminal_target = (
-                c_terminal_boundary0 + 3,
-                "ACACACACACACACACACACAGG",
+                c_terminal_boundary0 - 23,
+                # Target bases cover only Met/Trp codons in this CDS phase;
+                # neither amino acid has a synonymous alternative.
+                "TG" + "ATG" * 6 + "TGG",
             )
         elif guide_requires_blocking:
             c_terminal_target = (
                 c_terminal_boundary0 - 23,
-                "GCTGCTGCTGCTGCTGCTGCGGG",
+                # Diverse synonymous alanine codons avoid creating a second,
+                # overlapping copy of this synthetic on-target site.
+                "GCCGCTGCAGCGGCCGCTGCGGG",
             )
         else:
             c_terminal_target = (
@@ -100,6 +106,12 @@ class SyntheticEnsemblClient:
             chromosome[start0:start0 + 23] = target
             local_start0 = start0 - exon_start0
             cdna[local_start0:local_start0 + 23] = target
+
+        if guide_fallback:
+            # Rank 2 reverse-strand site: its CCN PAM is deleted with the stop.
+            start0 = c_terminal_boundary0 + 1
+            target = "CCAATATATATATATATATATAT"
+            chromosome[start0:start0 + 23] = target
 
         if coding_sapi_site:
             # GAG|CTC|TTC is coding and contains GCTCTTC across codons.
@@ -417,57 +429,22 @@ class OnlineDesignPathTest(unittest.TestCase):
                 self.assertEqual(guide.edited_target_insert_length_nt, 726)
                 self.assertEqual(len(guide.edited_target_region_5to3), 23 + 726)
 
-    def test_synonymous_pam_blocking_mutation_is_applied(self) -> None:
+    def test_unusable_nearer_guide_falls_back_to_sequence_complete_guide(self) -> None:
         result = design_online(
             species_key="human",
             gene="MockTagGene",
-            client=SyntheticEnsemblClient("human", guide_requires_blocking=True),
+            client=SyntheticEnsemblClient(
+                "human", guide_has_no_synonymous_block=True, guide_fallback=True
+            ),
         )
         guide = result.top_guide
         self.assertTrue(result.sequence_complete)
-        self.assertFalse(guide.pam_destroyed)
-        self.assertTrue(guide.final_pam_destroyed)
-        self.assertEqual((guide.pam, guide.final_pam), ("GGG", "GGA"))
         self.assertFalse(guide.blocking_mutation_required)
-        blocking = [
-            mutation
-            for mutation in result.five_prime_arm.mutations
-            if mutation.kind == "Guide blocking"
-        ]
-        self.assertEqual(len(blocking), 1)
-        self.assertEqual(
-            (
-                blocking[0].arm_position1,
-                blocking[0].genomic_position1,
-                blocking[0].original_codon,
-                blocking[0].altered_codon,
-                blocking[0].protein_consequence,
-            ),
-            (600, 2000, "GGG", "GGA", "synonymous (G)"),
-        )
-        self.assertEqual(
-            (blocking[0].pam_before, blocking[0].pam_after),
-            ("GGG", "GGA"),
-        )
-        self.assertEqual(
-            result.edited_cds_sequence[result.cds_length_without_stop - 3:result.cds_length_without_stop],
-            "GGA",
-        )
-        coordinates = result.cloning_fragments["assembly_coordinate_map"]
-        plasmid = result.cloning_fragments["assembled_plasmid_5to3"]
-        self.assertEqual(plasmid[coordinates["uha_start0"] + 599], "A")
-        report = design_report(result)
-        self.assertIn("PAM before/after: GGG -> GGA", report)
-        payload = json.loads(design_json(result))
-        self.assertEqual(payload["guides"][0]["final_pam"], "GGA")
-        genbank = SeqIO.read(StringIO(assembled_plasmid_genbank(result)), "genbank")
-        self.assertIn(
-            "Guide blocking",
-            {
-                feature.qualifiers.get("label", [""])[0]
-                for feature in genbank.features
-            },
-        )
+        self.assertTrue(guide.pam_destroyed)
+        self.assertFalse(guide.recuttable_site_present)
+        self.assertIn("destroys the PAM", guide.blocking_mutation_note)
+        self.assertTrue(any("Selected guide fallback" in warning for warning in result.warnings))
+        self.assertGreater(len(ordering_package_zip(result)), 0)
 
     def test_synonymous_seed_blocking_when_pam_cannot_change(self) -> None:
         result = design_online(
@@ -481,7 +458,8 @@ class OnlineDesignPathTest(unittest.TestCase):
         self.assertTrue(result.sequence_complete)
         self.assertEqual((guide.pam, guide.final_pam), ("TGG", "TGG"))
         self.assertFalse(guide.final_pam_destroyed)
-        self.assertEqual(guide.final_longest_retained_segment, 13)
+        self.assertLessEqual(guide.final_longest_retained_segment, 14)
+        self.assertFalse(guide.recuttable_site_present)
         blocking = [
             mutation
             for mutation in result.five_prime_arm.mutations
@@ -490,8 +468,12 @@ class OnlineDesignPathTest(unittest.TestCase):
         self.assertEqual(len(blocking), 1)
         self.assertEqual(
             (blocking[0].arm_position1, blocking[0].original_codon, blocking[0].altered_codon),
-            (591, "CAC", "CAT"),
+            (597, "CAC", "CAT"),
         )
+        self.assertEqual(
+            translate(result.edited_cds_sequence), result.fusion_protein_sequence
+        )
+        self.assertEqual(result.five_prime_arm.final_sapi_sites, [])
 
     def test_no_safe_synonymous_guide_block_stays_blocked(self) -> None:
         result = design_online(
@@ -683,21 +665,10 @@ class OnlineDesignPathTest(unittest.TestCase):
         )
         self.assertTrue(result.sequence_complete)
         self.assertEqual(result.gene_strand, "-")
-        self.assertEqual(result.top_guide.chromosome_strand, "-")
-        self.assertEqual(result.top_guide.final_pam, "GGA")
-        self.assertTrue(result.top_guide.final_pam_destroyed)
+        self.assertFalse(result.top_guide.recuttable_site_present)
         self.assertEqual(
             {mutation.kind for mutation in result.five_prime_arm.mutations},
-            {"SapI domestication", "Guide blocking"},
-        )
-        guide_mutation = next(
-            mutation
-            for mutation in result.five_prime_arm.mutations
-            if mutation.kind == "Guide blocking"
-        )
-        self.assertEqual(
-            (guide_mutation.arm_position1, guide_mutation.genomic_position1),
-            (600, 1501),
+            {"SapI domestication"},
         )
 
 

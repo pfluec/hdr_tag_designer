@@ -80,6 +80,11 @@ class GuideCandidate:
     edited_target_region_display: str = ""
     edited_target_insert_length_nt: int = 0
     edited_target_deleted_bases: str = ""
+    recuttable_site_present: bool = False
+    recuttable_site_matches: list[dict[str, Any]] = field(default_factory=list)
+    original_spacer_pam_contiguous_after_edit: bool = False
+    junction_recreated_target: bool = False
+    blocking_mutation_reason: str = ""
 
     @property
     def target_with_pam(self) -> str:

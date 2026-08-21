@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass, replace
 from itertools import combinations
 
@@ -32,6 +33,7 @@ from .guides import (
     GUIDE_SAFETY_CUTOFF_NT,
     enumerate_spcas9_guides,
     longest_retained_segment_after_point_mutations,
+    recuttable_on_target_sites,
 )
 from .models import (
     DesignResult,
@@ -842,6 +844,64 @@ def _guide_plan_preserves_sapi_sites(
     return True
 
 
+def _edited_locus_for_guide_analysis(
+    arms: tuple[HomologyArm, HomologyArm],
+    payload_gene_oriented: str,
+    plans: tuple[_SynonymousPlan, ...] = (),
+) -> tuple[str, tuple[int, int]]:
+    """Build the complete gene-oriented edited allele represented by the donor."""
+    five = _sequence_after_plans(arms[0], plans)
+    three = _sequence_after_plans(arms[1], plans)
+    return five + payload_gene_oriented + three, (
+        len(five),
+        len(five) + len(payload_gene_oriented),
+    )
+
+
+def _edited_locus_recutting_state(
+    guide: GuideCandidate,
+    *,
+    arms: tuple[HomologyArm, HomologyArm],
+    payload_gene_oriented: str,
+    plans: tuple[_SynonymousPlan, ...] = (),
+) -> tuple[list[dict[str, object]], list[dict[str, object]], int]:
+    edited_locus, junctions0 = _edited_locus_for_guide_analysis(
+        arms, payload_gene_oriented, plans
+    )
+    candidates = recuttable_on_target_sites(
+        edited_locus, guide.spacer, junctions0=junctions0, cutoff_nt=-1
+    )
+    recuttable = [
+        match
+        for match in candidates
+        if int(match["longest_matching_segment_nt"]) > GUIDE_SAFETY_CUTOFF_NT
+    ]
+    longest = max(
+        (int(match["longest_matching_segment_nt"]) for match in candidates),
+        default=0,
+    )
+    return candidates, recuttable, longest
+
+
+def _set_guide_recutting_state(
+    guide: GuideCandidate,
+    *,
+    candidates: list[dict[str, object]],
+    recuttable: list[dict[str, object]],
+    longest: int,
+) -> None:
+    guide.final_longest_retained_segment = longest
+    guide.recuttable_site_matches = recuttable
+    guide.recuttable_site_present = bool(recuttable)
+    guide.original_spacer_pam_contiguous_after_edit = any(
+        bool(match["exact_original_site"]) for match in candidates
+    )
+    guide.junction_recreated_target = any(
+        bool(match["crosses_insertion_junction"]) for match in recuttable
+    )
+    guide.blocking_mutation_required = bool(recuttable)
+
+
 def _design_guide_blocking_mutations(
     *,
     guide: GuideCandidate,
@@ -854,8 +914,9 @@ def _design_guide_blocking_mutations(
     insertion_boundary0: int,
     removed_start0: int,
     removed_end0: int,
+    payload_gene_oriented: str,
 ) -> tuple[HomologyArm, HomologyArm, list[str]]:
-    """Protect the edited allele with verified synonymous PAM/seed changes."""
+    """Protect the complete edited allele with verified synonymous changes."""
     warnings: list[str] = []
     arms = (five_prime_arm, three_prime_arm)
     current_target = _donor_target_after_edits(
@@ -872,23 +933,43 @@ def _design_guide_blocking_mutations(
     current_pam_functional = current_target[21:23] == "GG"
     guide.final_pam = current_pam
     guide.final_pam_destroyed = guide.pam_destroyed or not current_pam_functional
-    guide.final_longest_retained_segment = current_retained
-    guide.blocking_mutation_required = (
-        not guide.final_pam_destroyed
-        and current_retained > GUIDE_SAFETY_CUTOFF_NT
+    candidates, recuttable, edited_locus_longest = _edited_locus_recutting_state(
+        guide, arms=arms, payload_gene_oriented=payload_gene_oriented
+    )
+    _set_guide_recutting_state(
+        guide,
+        candidates=candidates,
+        recuttable=recuttable,
+        longest=edited_locus_longest,
     )
 
     if not guide.blocking_mutation_required:
-        if guide.pam_destroyed:
-            return five_prime_arm, three_prime_arm, warnings
-        if current_target != guide.target_with_pam:
+        if guide.insertion_disrupts_target and not guide.original_spacer_pam_contiguous_after_edit:
             guide.blocking_mutation_note = (
-                "No additional guide-blocking mutation is required: an automatically "
-                f"designed donor correction changes the PAM from {guide.pam} to {current_pam} "
-                f"or reduces the longest retained segment from {guide.longest_retained_segment} "
-                f"to {current_retained} nt."
+                "No additional guide-blocking mutation is required: the insertion separates "
+                "the original protospacer from its PAM, and the complete edited locus contains "
+                "no reconstructed copy of the original PAM-adjacent target."
             )
+            guide.blocking_mutation_reason = "insertion separates protospacer and PAM"
+        elif guide.pam_destroyed:
+            guide.blocking_mutation_note = (
+                "No additional guide-blocking mutation is required because the intended edit "
+                "destroys the PAM and the complete edited locus contains no recuttable target."
+            )
+            guide.blocking_mutation_reason = "PAM destroyed by intended edit"
+        elif current_target != guide.target_with_pam:
+            guide.blocking_mutation_note = (
+                "No additional guide-blocking mutation is required: existing donor changes "
+                "leave no contiguous PAM-adjacent candidate above the 14-nt safety cutoff in "
+                "the complete edited locus."
+            )
+            guide.blocking_mutation_reason = "existing donor edits disrupt recuttable site"
         return five_prime_arm, three_prime_arm, warnings
+
+    guide.blocking_mutation_reason = (
+        "complete edited locus contains a contiguous PAM-adjacent candidate with more "
+        f"than {GUIDE_SAFETY_CUTOFF_NT} contiguous PAM-proximal matching spacer bases"
+    )
 
     eligible_genomic_positions0 = set(range(guide.target_start0, guide.target_end0))
     existing_mutated_positions0 = set(_mutated_genomic_positions0(arms))
@@ -962,15 +1043,13 @@ def _design_guide_blocking_mutations(
             )
             pam_after = target_after[-3:]
             pam_destroyed = target_after[21:23] != "GG"
-            retained_after = _retained_after_donor_edits(
+            _, recuttable_after, retained_after = _edited_locus_recutting_state(
                 guide,
-                insertion_boundary0=insertion_boundary0,
-                removed_start0=removed_start0,
-                removed_end0=removed_end0,
                 arms=arms,
-                additional_plans=selected,
+                payload_gene_oriented=payload_gene_oriented,
+                plans=selected,
             )
-            if not pam_destroyed and retained_after > GUIDE_SAFETY_CUTOFF_NT:
+            if recuttable_after:
                 continue
             target_indexes = [
                 (
@@ -1047,21 +1126,18 @@ def _design_guide_blocking_mutations(
     verified_target = _donor_target_after_edits(
         guide, gene_strand=record.strand, arms=final_arms
     )
-    verified_retained = _retained_after_donor_edits(
-        guide,
-        insertion_boundary0=insertion_boundary0,
-        removed_start0=removed_start0,
-        removed_end0=removed_end0,
-        arms=final_arms,
+    verified_candidates, verified_recuttable, verified_retained = _edited_locus_recutting_state(
+        guide, arms=final_arms, payload_gene_oriented=payload_gene_oriented
     )
     if verified_target[-3:] != final_pam or verified_retained != final_retained:
         raise DesignError("Guide-blocking mutation verification did not reproduce its prediction")
     guide.final_pam = final_pam
     guide.final_pam_destroyed = guide.pam_destroyed or verified_target[21:23] != "GG"
-    guide.final_longest_retained_segment = verified_retained
-    guide.blocking_mutation_required = (
-        not guide.final_pam_destroyed
-        and verified_retained > GUIDE_SAFETY_CUTOFF_NT
+    _set_guide_recutting_state(
+        guide,
+        candidates=verified_candidates,
+        recuttable=verified_recuttable,
+        longest=verified_retained,
     )
     if guide.blocking_mutation_required:
         raise DesignError("Automatically designed guide-blocking mutation did not pass the safety gate")
@@ -1536,16 +1612,10 @@ def _finalize_result(
                     "check": "Donor retargeting safeguard",
                     "status": "PASS" if guide_safe else "BLOCKED",
                     "detail": (
-                        (
-                            "The intended edit removes part of the NGG PAM; no additional "
-                            "guide-blocking mutation is required. "
-                            f"Longest surviving target segment: {top.final_longest_retained_segment} nt."
-                        )
-                        if top.pam_destroyed
-                        else (
-                            f"Longest uninterrupted original target segment after final donor edits: "
-                            f"{top.final_longest_retained_segment} nt; protocol cutoff <= {GUIDE_SAFETY_CUTOFF_NT} nt."
-                        )
+                        f"Complete edited-locus scan found {len(top.recuttable_site_matches)} "
+                        "contiguous NGG-adjacent on-target candidate(s) on both strands; "
+                        f"the safety cutoff is >{GUIDE_SAFETY_CUTOFF_NT} contiguous PAM-proximal matching spacer bases. "
+                        f"{top.blocking_mutation_note}"
                     ),
                 },
             ]
@@ -1954,19 +2024,65 @@ def design_online(
         removed_end0=removed_end0,
     )
     if guides:
-        five_arm, three_arm, warnings = _design_guide_blocking_mutations(
-            guide=guides[0],
-            five_prime_arm=five_arm,
-            three_prime_arm=three_arm,
-            record=record,
-            transcript_mapping=mapping,
-            cds_start_cdna0=cds_start,
-            current_cdna=current_cdna,
-            insertion_boundary0=insertion_boundary0,
-            removed_start0=removed_start0,
-            removed_end0=removed_end0,
+        payload_gene_oriented = str(
+            payload_metadata_for(selected_backbone)["payload_sequence_5to3"]
         )
-        mutation_warnings.extend(warnings)
+        first_failed: tuple[HomologyArm, HomologyArm, list[str], list[str]] | None = None
+        selected_index: int | None = None
+        for index, guide in enumerate(guides):
+            trial_five = deepcopy(five_arm)
+            trial_three = deepcopy(three_arm)
+            trial_cdna = list(current_cdna)
+            trial_five, trial_three, warnings = _design_guide_blocking_mutations(
+                guide=guide,
+                five_prime_arm=trial_five,
+                three_prime_arm=trial_three,
+                record=record,
+                transcript_mapping=mapping,
+                cds_start_cdna0=cds_start,
+                current_cdna=trial_cdna,
+                insertion_boundary0=insertion_boundary0,
+                removed_start0=removed_start0,
+                removed_end0=removed_end0,
+                payload_gene_oriented=payload_gene_oriented,
+            )
+            if first_failed is None:
+                first_failed = (trial_five, trial_three, trial_cdna, warnings)
+            if not guide.blocking_mutation_required:
+                try:
+                    synthesis_fragments_for_backbone(
+                        selected_backbone,
+                        target_with_pam=guide.target_with_pam,
+                        uha=trial_five.final_gene_oriented_sequence,
+                        dha=trial_three.final_gene_oriented_sequence,
+                    )
+                except ValueError as exc:
+                    guide.blocking_mutation_required = True
+                    guide.blocking_mutation_reason = (
+                        f"guide-specific donor assembly preflight failed: {exc}"
+                    )
+                    guide.blocking_mutation_note = (
+                        "This guide passed edited-locus recutting analysis but failed the "
+                        f"complete donor-assembly release preflight: {exc}"
+                    )
+                    continue
+                five_arm, three_arm, current_cdna = trial_five, trial_three, trial_cdna
+                mutation_warnings.extend(warnings)
+                selected_index = index
+                break
+        if selected_index is None and first_failed is not None:
+            five_arm, three_arm, current_cdna, warnings = first_failed
+            mutation_warnings.extend(warnings)
+        elif selected_index:
+            selected = guides.pop(selected_index)
+            guides.insert(0, selected)
+            for rank, guide in enumerate(guides, start=1):
+                guide.rank = rank
+            mutation_warnings.append(
+                f"Selected guide fallback: the top {selected_index} ranked guide(s) could "
+                "not pass the edited-locus recutting gate; the highest-ranked sequence-complete "
+                f"alternative is {selected.spacer}-{selected.pam}."
+            )
 
     edited_cds_without_stop = "".join(
         current_cdna[cds_start:cds_start + len(cds_without_stop)]
@@ -2094,11 +2210,24 @@ def design_tubb5_fixture(
     if translate(edited_cds_without_stop) != translate(cds_without_stop):
         raise DesignError("The proposed Tubb5 arm corrections alter the protein sequence")
 
-    # The selected guide's PAM overlaps the endogenous stop codon and is removed
-    # by the C-terminal insertion. Following the Bollen guide-selection logic,
-    # that destroys the edited-allele target without an additional blocking edit.
+    # Verify the fixture with the same complete edited-locus scan used online.
     if not guides[0].pam_destroyed or guides[0].blocking_mutation_required:
         raise DesignError("Expected the selected Tubb5 guide PAM to be destroyed by the edit")
+    candidates, recuttable, longest = _edited_locus_recutting_state(
+        guides[0],
+        arms=(five_arm, three_arm),
+        payload_gene_oriented=str(
+            payload_metadata_for(backbone_for_terminus("C-terminal"))["payload_sequence_5to3"]
+        ),
+    )
+    _set_guide_recutting_state(
+        guides[0], candidates=candidates, recuttable=recuttable, longest=longest
+    )
+    if guides[0].recuttable_site_present:
+        raise DesignError(
+            f"Tubb5 edited locus unexpectedly retains a recuttable target: {recuttable!r}"
+        )
+    guides[0].blocking_mutation_reason = "PAM destroyed by intended edit"
     guides[0].blocking_mutation_note = (
         "No extra guide-blocking mutation is required: replacement of the endogenous "
         "TAA stop codon removes one base of the selected guide's AGG PAM."

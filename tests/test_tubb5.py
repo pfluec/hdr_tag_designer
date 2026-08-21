@@ -55,7 +55,8 @@ class Tubb5DesignTest(unittest.TestCase):
         self.assertTrue(guide.target_destroyed)
         self.assertTrue(guide.pam_destroyed)
         self.assertEqual(guide.longest_retained_segment, 18)
-        self.assertEqual(guide.final_longest_retained_segment, 18)
+        self.assertEqual(guide.final_longest_retained_segment, 3)
+        self.assertFalse(guide.recuttable_site_present)
         self.assertFalse(guide.blocking_mutation_required)
         self.assertIn("No extra guide-blocking mutation is required", guide.blocking_mutation_note)
         self.assertEqual(
@@ -449,7 +450,7 @@ class Tubb5DesignTest(unittest.TestCase):
         self.assertIn("edited_locus_with_300bp_external_flanks", fasta)
         payload = json.loads(design_json(self.result))
         self.assertTrue(payload["sequence_complete"])
-        self.assertEqual(payload["guides"][0]["final_longest_retained_segment"], 18)
+        self.assertEqual(payload["guides"][0]["final_longest_retained_segment"], 3)
         self.assertFalse(payload["guides"][0]["blocking_mutation_required"])
         self.assertEqual(payload["genotyping_primers"]["status"], "PASS")
 
