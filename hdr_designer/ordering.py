@@ -83,8 +83,14 @@ def design_identity(result: DesignResult) -> str:
 
 
 def _safe_stem(result: DesignResult) -> str:
+    tag_name = (
+        result.backbone_name
+        if result.backbone_addgene_id == "custom"
+        else str(result.donor_payload.get("tag_name", "tag"))
+    )
     raw = (
         f"{result.gene_symbol}_{result.terminus.lower().replace('-', '_')}_"
+        f"{tag_name}_"
         f"{design_identity(result)}"
     )
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", raw).strip("._") or "hdr_design"

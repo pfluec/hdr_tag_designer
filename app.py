@@ -596,7 +596,10 @@ def main() -> None:
                 ) as handle:
                     handle.write(custom_backbone_upload.getvalue())
                     temporary_backbone_path = Path(handle.name)
-                design_backbone = infer_custom_backbone_definition(temporary_backbone_path)
+                design_backbone = infer_custom_backbone_definition(
+                    temporary_backbone_path,
+                    source_filename=custom_backbone_upload.name,
+                )
                 if design_backbone.terminus != terminus:
                     raise DesignError(
                         f"The uploaded SapI architecture is {design_backbone.terminus}, "

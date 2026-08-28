@@ -91,6 +91,7 @@ class BackboneDefinition:
     fusion_compatible: bool = True
     payload_kind: str = "in-frame fusion"
     payload_warning: str = ""
+    source_filename: str = ""
 
     @property
     def overhangs(self) -> dict[str, str]:
@@ -158,7 +159,11 @@ def backbone_for_terminus(terminus: str) -> BackboneDefinition:
     raise ValueError("Terminus must be N-terminal or C-terminal")
 
 
-def infer_custom_backbone_definition(path: str | Path) -> BackboneDefinition:
+def infer_custom_backbone_definition(
+    path: str | Path,
+    *,
+    source_filename: str | None = None,
+) -> BackboneDefinition:
     """Classify a circular .dna backbone from its four SapI overhangs.
 
     Custom payloads must retain either the Bollen N- or C-terminal SapI overhang
@@ -199,9 +204,12 @@ def infer_custom_backbone_definition(path: str | Path) -> BackboneDefinition:
     payload = payload_core + template.overhangs["payload_to_dha"]
     payload_classification = _classify_custom_payload(payload, template)
 
+    uploaded_filename = Path(source_filename or document.path.name).name
+    uploaded_stem = Path(uploaded_filename).stem
+
     return BackboneDefinition(
         key=f"custom_{template.terminus.lower().replace('-', '_')}",
-        name=f"Custom {template.terminus} transfer backbone",
+        name=uploaded_stem,
         addgene_id="custom",
         terminus=template.terminus,
         dna_path=document.path,
@@ -228,6 +236,7 @@ def infer_custom_backbone_definition(path: str | Path) -> BackboneDefinition:
         fusion_compatible=bool(payload_classification["fusion_compatible"]),
         payload_kind=str(payload_classification["payload_kind"]),
         payload_warning=str(payload_classification["payload_warning"]),
+        source_filename=uploaded_filename,
     )
 
 
@@ -517,7 +526,7 @@ def backbone_metadata_for(definition: BackboneDefinition) -> dict[str, Any]:
         "name": definition.name,
         "addgene_id": definition.addgene_id,
         "terminus": definition.terminus,
-        "snapgene_file": document.path.name,
+        "snapgene_file": definition.source_filename or document.path.name,
         "snapgene_sha256": document.sha256,
         "length_nt": document.length,
         "topology": document.topology,

@@ -4,6 +4,7 @@ import csv
 from datetime import datetime, timezone
 import io
 import json
+import re
 from typing import Any
 
 from Bio import SeqIO
@@ -339,10 +340,16 @@ def assembled_plasmid_genbank(
     if not sequence or not features:
         raise ValueError("No complete assembled plasmid is available for GenBank export")
 
+    if result.backbone_addgene_id == "custom":
+        record_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", result.backbone_name).strip("._")
+        record_id = record_id or "custom_backbone"
+    else:
+        record_id = f"{result.gene_symbol}_mNG_HDR"
+
     record = SeqRecord(
         Seq(str(sequence)),
-        id=f"{result.gene_symbol}_mNG_HDR",
-        name=f"{result.gene_symbol}_mNG_HDR"[:16],
+        id=record_id,
+        name=record_id[:16],
         description=(
             f"Simulated SapI Golden Gate assembly: {result.gene_symbol} {result.terminus} "
             f"{result.donor_payload.get('tag_name', 'tag')} donor in "

@@ -245,7 +245,7 @@ class OrderingExportTest(unittest.TestCase):
         second = ordering_package_zip(self.ordering_ready)
         self.assertEqual(first, second)
         expected_names = [name for name, _ in ordering_package_members(self.ordering_ready)]
-        stem = f"Tubb5_c_terminal_{design_identity(self.ordering_ready)}"
+        stem = f"Tubb5_c_terminal_mNeonGreen_{design_identity(self.ordering_ready)}"
         self.assertEqual(
             expected_names,
             [

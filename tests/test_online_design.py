@@ -29,7 +29,11 @@ from hdr_designer.exports import (
     sapi_qc_rows,
 )
 from hdr_designer.models import Exon, HomologyArm, TranscriptRecord
-from hdr_designer.ordering import ordering_package_zip
+from hdr_designer.ordering import (
+    ordering_package_filename,
+    ordering_package_members,
+    ordering_package_zip,
+)
 from hdr_designer.sequence import reverse_complement, translate
 
 
@@ -336,8 +340,13 @@ class OnlineDesignPathTest(unittest.TestCase):
         self.assertEqual(result.cloning_fragments["assembled_plasmid_length_nt"], 3947)
 
     def test_uploaded_backbone_is_classified_and_assembled_from_sapi_sites(self) -> None:
-        custom = infer_custom_backbone_definition(NTERM_BACKBONE_DNA)
+        custom = infer_custom_backbone_definition(
+            NTERM_BACKBONE_DNA,
+            source_filename="my custom donor.dna",
+        )
         self.assertTrue(custom.is_custom)
+        self.assertEqual(custom.name, "my custom donor")
+        self.assertEqual(custom.source_filename, "my custom donor.dna")
         self.assertEqual(custom.terminus, "N-terminal")
         self.assertEqual(custom.payload_length_nt, 726)
         result = design_online(
@@ -349,6 +358,20 @@ class OnlineDesignPathTest(unittest.TestCase):
         )
         self.assertTrue(result.sequence_complete)
         self.assertEqual(result.backbone_addgene_id, "custom")
+        plasmid_record = SeqIO.read(StringIO(assembled_plasmid_genbank(result)), "genbank")
+        self.assertEqual(plasmid_record.id, "my_custom_donor")
+        self.assertNotIn("mNG", plasmid_record.id)
+        self.assertTrue(
+            ordering_package_filename(result).startswith(
+                "MockTagGene_n_terminal_my_custom_donor_"
+            )
+        )
+        self.assertTrue(
+            all(
+                name.startswith("MockTagGene_n_terminal_my_custom_donor_")
+                for name, _ in ordering_package_members(result)
+            )
+        )
         self.assertEqual(
             result.cloning_fragments["expected_sapi_overhangs"],
             custom.overhangs,
