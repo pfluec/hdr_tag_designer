@@ -1,6 +1,6 @@
 # HDR Tag Designer
 
-A local Streamlit prototype for Bollen-style **in-trans paired nicking (ITPN)** gene tagging with **SpCas9 D10A**. The first input is species: mouse **GRCm39** or human **GRCh38**.
+A local Streamlit prototype for **in-trans paired nicking (ITPN)** gene tagging with **SpCas9 D10A**. The first input is species: mouse **GRCm39** or human **GRCh38**.
 
 Version 0.7.0 supports both finalized Bollen donor architectures:
 

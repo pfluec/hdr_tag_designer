@@ -481,7 +481,7 @@ def main() -> None:
     st.set_page_config(page_title="HDR Tag Designer", page_icon="DNA", layout="wide")
     st.title("HDR Tag Designer")
     st.caption(
-        f"Bollen-style ITPN gene-tagging prototype using SpCas9 D10A. Version {APP_VERSION} "
+        f"ITPN gene-tagging prototype using SpCas9 D10A. Version {APP_VERSION} "
         "adds order-ready CSVs, a consolidated ZIP export, and homology-arm synthesis QC."
     )
     st.info(
