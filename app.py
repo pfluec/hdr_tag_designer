@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 import tempfile
 from typing import Any
@@ -597,9 +597,14 @@ def main() -> None:
                     handle.write(custom_backbone_upload.getvalue())
                     temporary_backbone_path = Path(handle.name)
                 design_backbone = infer_custom_backbone_definition(
-                    temporary_backbone_path,
-                    source_filename=custom_backbone_upload.name,
+                    temporary_backbone_path
                 )
+                uploaded_filename = Path(custom_backbone_upload.name).name
+                uploaded_name = Path(uploaded_filename).stem
+                replacement_fields = {"name": uploaded_name}
+                if hasattr(design_backbone, "source_filename"):
+                    replacement_fields["source_filename"] = uploaded_filename
+                design_backbone = replace(design_backbone, **replacement_fields)
                 if design_backbone.terminus != terminus:
                     raise DesignError(
                         f"The uploaded SapI architecture is {design_backbone.terminus}, "

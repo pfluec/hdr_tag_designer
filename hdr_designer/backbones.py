@@ -526,7 +526,7 @@ def backbone_metadata_for(definition: BackboneDefinition) -> dict[str, Any]:
         "name": definition.name,
         "addgene_id": definition.addgene_id,
         "terminus": definition.terminus,
-        "snapgene_file": definition.source_filename or document.path.name,
+        "snapgene_file": getattr(definition, "source_filename", "") or document.path.name,
         "snapgene_sha256": document.sha256,
         "length_nt": document.length,
         "topology": document.topology,

@@ -1866,7 +1866,7 @@ def design_online(
     record = client.transcript_record(SPECIES[species_key], gene, transcript_id)
     backbone_source = (
         f"Custom SnapGene backbone "
-        f"{selected_backbone.source_filename or selected_backbone.dna_path.name}"
+        f"{getattr(selected_backbone, 'source_filename', '') or selected_backbone.dna_path.name}"
         if selected_backbone.is_custom
         else f"Uploaded Addgene #{selected_backbone.addgene_id} SnapGene sequence"
     )
