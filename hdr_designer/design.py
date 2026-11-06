@@ -1880,7 +1880,12 @@ def design_online(
     if terminus_upper.startswith("C"):
         stop = record.cds[-3:]
         if stop not in {"TAA", "TAG", "TGA"}:
-            raise DesignError(f"Transcript CDS does not end in a standard stop codon: {stop}")
+            raise DesignError(
+                f"Ensembl retrieval succeeded, but {record.display_transcript_id} "
+                f"({record.gene_symbol}) has no standard terminal stop codon "
+                f"(CDS ends in {stop}). C-terminal tagging requires a complete coding end. "
+                "Select a verified complete protein-coding transcript using the Transcript ID field."
+            )
         insertion_t0 = cds_start + len(record.cds) - 3
         removed_indices = mapping[insertion_t0:insertion_t0 + 3]
         if len(removed_indices) != 3 or max(removed_indices) - min(removed_indices) != 2:

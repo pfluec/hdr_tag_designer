@@ -26,7 +26,9 @@ SPECIES: dict[str, SpeciesConfig] = {
 
 
 class EnsemblError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class EnsemblClient:
@@ -76,7 +78,9 @@ class EnsemblClient:
             try:
                 response = self.session.get(
                     url,
-                    params=params,
+                    # Make representation explicit in the URL as well as the
+                    # headers, including for intermediate HTTP caches.
+                    params={**(params or {}), "content-type": accept},
                     headers={"Content-Type": accept, "Accept": accept},
                     timeout=self.timeout,
                 )
@@ -84,9 +88,15 @@ class EnsemblClient:
                 if attempt < self.max_retries:
                     time.sleep(self._retry_delay(None, attempt))
                     continue
+                reason = (
+                    "Ensembl timed out"
+                    if isinstance(exc, requests.Timeout)
+                    else "Could not contact Ensembl"
+                )
                 raise EnsemblError(
-                    f"Could not contact Ensembl after {attempt + 1} attempts. "
-                    "Check the network connection and try again."
+                    f"{reason} at {url} after {attempt + 1} attempts. "
+                    "The service or network may be unavailable; try again later. "
+                    "This connection failure does not establish that the gene or transcript is invalid."
                 ) from exc
             retryable = response.status_code == 429 or 500 <= response.status_code < 600
             if retryable and attempt < self.max_retries:
@@ -100,7 +110,8 @@ class EnsemblClient:
             if not response.ok:
                 raise EnsemblError(
                     f"Ensembl rejected the request for {path} (HTTP {response.status_code}). "
-                    "Check the gene/transcript identifier and selected species."
+                    "Check the gene/transcript identifier and selected species.",
+                    status_code=response.status_code,
                 )
             return response
         raise AssertionError("Ensembl retry loop ended unexpectedly")
@@ -128,6 +139,17 @@ class EnsemblClient:
         query = symbol_or_id.strip()
         if query.upper().startswith(("ENSG", "ENSMUSG")):
             return self._request_json(f"/lookup/id/{query}", {"expand": 1})
+        # Resolve the named gene directly. Symbol xrefs can include multiple
+        # loci (e.g. MUC2 on alternative human assembly regions), and their
+        # ordering is not a reliable way to select the intended gene.
+        try:
+            return self._request_json(
+                f"/lookup/symbol/{species.ensembl_name}/{query}", {"expand": 1}
+            )
+        except EnsemblError as exc:
+            if exc.status_code not in {400, 404}:
+                raise
+        # Retain alias support when the direct symbol endpoint has no match.
         xrefs = self._request_json(
             f"/xrefs/symbol/{species.ensembl_name}/{query}",
             {"object_type": "gene"},
@@ -135,7 +157,7 @@ class EnsemblClient:
         gene_hits = [item for item in xrefs if item.get("type") == "gene"]
         if not gene_hits:
             raise EnsemblError(f"No Ensembl gene found for {query!r} in {species.label}")
-        # Prefer an exact display-label match, then use the first Ensembl result.
+        # Prefer an exact display-label match for aliases that provide labels.
         exact = [
             item for item in gene_hits
             if str(item.get("display_id", "")).casefold() == query.casefold()

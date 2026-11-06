@@ -20,7 +20,7 @@ from hdr_designer.backbones import (
     NTERM_BACKBONE,
     _classify_custom_payload,
 )
-from hdr_designer.design import _automatic_noncoding_sapi_mutation, design_online
+from hdr_designer.design import DesignError, _automatic_noncoding_sapi_mutation, design_online
 from hdr_designer.ensembl import SPECIES
 from hdr_designer.exports import (
     assembled_plasmid_genbank,
@@ -200,6 +200,16 @@ class SyntheticEnsemblClient:
 
 
 class OnlineDesignPathTest(unittest.TestCase):
+    def test_incomplete_coding_end_identifies_transcript_and_next_step(self) -> None:
+        client = SyntheticEnsemblClient("human")
+        client.record.cds = client.record.cds[:-3]
+        with self.assertRaises(DesignError) as raised:
+            design_online(species_key="human", gene="MockTagGene", client=client)
+        message = str(raised.exception)
+        self.assertIn("Ensembl retrieval succeeded", message)
+        self.assertIn("MOCKT0001.1", message)
+        self.assertIn("Transcript ID field", message)
+
     def test_mouse_and_human_c_terminal_paths(self) -> None:
         for species_key, assembly in (("mouse", "GRCm39"), ("human", "GRCh38")):
             with self.subTest(species=species_key):
